@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Print how to write the binman boot image to a TF card.
+# This helper only prints commands; it never opens a block device itself.
+set -euo pipefail
+echo "Rockchip binman boot image for LubanCat-4 (RK3588S2), replace mmcblkX with your TF card:"
+echo "  sudo dd if=/boot/u-boot-rockchip.bin of=/dev/mmcblkX bs=512 seek=64 conv=notrunc status=none"
+echo "  sync; reseat the card."

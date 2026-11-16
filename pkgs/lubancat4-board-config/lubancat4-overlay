@@ -1,0 +1,201 @@
+#!/bin/bash
+# Switch device tree overlays for the next boot.
+#
+# The switch is one line inside a boot entry of /boot/extlinux/extlinux.conf:
+#     fdtoverlays /overlays/a.dtbo /overlays/b.dtbo
+# Mainline U-Boot (bootstd/extlinux) reads it, loads each .dtbo and applies it to the kernel
+# device tree before booting. Paths are relative to the boot filesystem root, i.e. /boot.
+#
+# This replaces the vendor pair enable_uboot_overlays=1 + a list in /uEnv/uEnv.txt,
+# which only the vendor U-Boot's dtfile command understood.
+#
+#   lubancat4-overlay list            installed overlays, marked with what is enabled
+#   lubancat4-overlay show            this kernel's fdt and fdtoverlays lines
+#   lubancat4-overlay enable  <name>...
+#   lubancat4-overlay disable <name>...
+#   lubancat4-overlay clear
+#
+# Two kernels can be installed at once and each entry has its own overlay set:
+#   arch  /Image      /dtbs/...      /overlays/...      linux-lubancat4-git
+#   bsp   /bsp/Image  /bsp/dtbs/...  /bsp/overlays/...  linux-lubancat4-bsp
+# An overlay is compiled against one base tree, so applying the BSP set to the mainline .dtb
+# would either fail to apply or patch the wrong nodes. The edit is therefore scoped to a label.
+# -k/--kernel picks the entry; the default is the label named on the "default" line.
+set -euo pipefail
+
+CONF=/boot/extlinux/extlinux.conf
+WANT=/etc/lubancat4/overlays
+KERNEL=${LUBANCAT_KERNEL:-}
+
+die() { echo "$*" >&2; exit 1; }
+
+# Per-kernel directories. UBOOTDIR is how U-Boot names the same place: extlinux paths with a
+# leading / are relative to the boot filesystem root, which on Linux is mounted at /boot.
+set_kernel() {
+  case $1 in
+    arch|mainline) KERNEL=arch; DIR=/boot/overlays;     UBOOTDIR=/overlays     ;;
+    bsp)           KERNEL=bsp;  DIR=/boot/bsp/overlays; UBOOTDIR=/bsp/overlays ;;
+    *) die "no such kernel entry: $1 (arch, mainline, bsp)" ;;
+  esac
+}
+
+# The label named by the global "default" line, so the default kernel needs no extra flag.
+default_label() {
+  awk '/^[[:space:]]*default[[:space:]]/{print $2; exit}' "$CONF"
+}
+
+resolve_kernel() {
+  [[ -n $KERNEL ]] && { set_kernel "$KERNEL"; return; }
+  local d
+  d=$(default_label)
+  [[ -n $d ]] || die "$CONF has no default label"
+  set_kernel "$d"
+}
+
+# Available names, without the .dtbo suffix.
+available() {
+  local f
+  for f in "$DIR"/*.dtbo; do
+    [[ -e $f ]] || continue
+    basename "$f" .dtbo
+  done
+}
+
+# Names on this kernel's fdtoverlays line, without directory and suffix.
+enabled() {
+  awk -v want="$KERNEL" '
+    /^[[:space:]]*label[[:space:]]/ { cur = $2; next }
+    cur != want { next }
+    /^[[:space:]]*fdtoverlays[[:space:]]/ {
+      sub(/^[[:space:]]*fdtoverlays[[:space:]]+/, "")
+      for (i = 1; i <= NF; i++) { sub(/^.*\//, "", $i); sub(/\.dtbo$/, "", $i); print $i }
+    }' "$CONF"
+}
+
+show_entry() {
+  awk -v want="$KERNEL" '
+    /^[[:space:]]*label[[:space:]]/ { cur = $2; next }
+    cur == want && /^[[:space:]]*(fdt|fdtoverlays)[[:space:]]/ { print }
+  ' "$CONF"
+}
+
+require_entry() {
+  awk -v want="$KERNEL" '
+    /^[[:space:]]*label[[:space:]]/ { if ($2 == want) found = 1 }
+    END { exit !found }' "$CONF" || die "$CONF has no label '$KERNEL'"
+}
+
+# Rewrite only the entry for $KERNEL. Every other entry is copied through untouched; that is
+# what keeps the two kernels' overlay sets apart.
+write_state() {
+  local list="$*" line tmp n
+  require_entry
+  tmp=$(mktemp)
+
+  if [[ -z $list ]]; then
+    # Drop the line rather than leaving an empty directive: an empty fdtoverlays is parsed
+    # as a directive with no arguments.
+    awk -v want="$KERNEL" '
+      /^[[:space:]]*label[[:space:]]/ { cur = $2 }
+      cur == want && /^[[:space:]]*fdtoverlays[[:space:]]/ { next }
+      { print }
+    ' "$CONF" > "$tmp"
+    : > "$WANT"
+  else
+    line="    fdtoverlays"
+    for n in $list; do line="$line $UBOOTDIR/$n.dtbo"; done
+    # Replace this entry's first fdtoverlays line, drop its extra ones, and insert one at the
+    # end of the entry when it had none.
+    awk -v want="$KERNEL" -v line="$line" '
+      /^[[:space:]]*label[[:space:]]/ {
+        if (cur == want && !done) { print line; done = 1 }
+        cur = $2; print; next
+      }
+      cur == want && /^[[:space:]]*fdtoverlays[[:space:]]/ {
+        if (!done) { print line; done = 1 }
+        next
+      }
+      cur == want {
+        if (!done && /^[[:space:]]*fdt[[:space:]]/) { print; print line; done = 1; next }
+        print; next
+      }
+      { print }
+      END { if (cur == want && !done) print line }
+    ' "$CONF" > "$tmp"
+    printf '%s\n' $list > "$WANT"
+  fi
+
+  cat "$tmp" > "$CONF"
+  rm -f "$tmp"
+  echo "kernel : $KERNEL  ($DIR)"
+  echo "next boot:"
+  show_entry | sed 's/^[[:space:]]*/  /'
+  echo "reboot to apply"
+}
+
+check_names() {
+  local n avail
+  for n in "$@"; do
+    [[ -e "$DIR/$n.dtbo" ]] || {
+      avail=$(available | tr '\n' ' ')
+      die "no such overlay for $KERNEL: $n
+installed in $DIR: ${avail:-<none>}"
+    }
+  done
+}
+
+cmd=${1:-list}
+shift || true
+
+# -k/--kernel may appear before or after the command name.
+newargs=()
+while (( $# )); do
+  case $1 in
+    -k|--kernel) KERNEL=${2:-}; shift 2 || die "$1 needs a value" ;;
+    *) newargs+=("$1"); shift ;;
+  esac
+done
+set -- "${newargs[@]}"
+
+resolve_kernel
+
+[[ -r $CONF ]] || die "$CONF does not exist"
+
+case $cmd in
+  list)
+    cur=$(enabled | tr '\n' ' ')
+    for n in $(available); do
+      case " $cur " in
+        *" $n "*) echo "  [x] $n" ;;
+        *)        echo "  [ ] $n" ;;
+      esac
+    done
+    echo "enabled for $KERNEL: ${cur:-<none>}"
+    ;;
+  show)
+    echo "kernel : $KERNEL  ($DIR)"
+    show_entry | sed 's/^[[:space:]]*/  /'
+    ;;
+  enable)
+    (( $# )) || die "usage: lubancat4-overlay enable <name>..."
+    check_names "$@"
+    cur=$(enabled)
+    write_state $cur "$@" | sed -n '1p;$p'
+    ;;
+  disable)
+    (( $# )) || die "usage: lubancat4-overlay disable <name>..."
+    cur=$(enabled); new=()
+    for n in $cur; do
+      skip=0
+      for d in "$@"; do [[ $n == "$d" ]] && skip=1; done
+      (( skip )) || new+=("$n")
+    done
+    write_state "${new[@]:-}" | sed -n '1p;$p'
+    ;;
+  clear)
+    write_state | sed -n '1p;$p'
+    ;;
+  *)
+    die "usage: lubancat4-overlay [list|show|enable|disable|clear] [-k arch|bsp]"
+    ;;
+esac

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * HDMI0 audio over I2S5 for EmbedFire LubanCat-4.
+ *
+ * Ported from the vendor overlay rk3588s-lubancat-4-hdmi0-vp0-overlay.dts.
+ * The vendor overlay also did the video side (route_hdmi0 / hdmi0_in_vp0 / hdptxphy),
+ * because in the vendor base tree HDMI is off by default and the .dtbo picks which
+ * VOP drives it. Upstream rk3588s-lubancat-4.dts already wires HDMI0 to VP0, so the
+ * only thing left to switch here is the audio codec side of the HDMI link.
+ *
+ * The base tree defines hdmi0_sound with both ends already described
+ * (simple-audio-card,codec = <&hdmi0>, cpu = <&i2s5_8ch>) and status = "disabled".
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target = <&hdmi0_sound>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&i2s5_8ch>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};

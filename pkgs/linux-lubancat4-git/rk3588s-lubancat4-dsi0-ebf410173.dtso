@@ -1,0 +1,169 @@
+/* SPDX-License-Identifier: (GPL-2.0+ OR MIT) */
+/*
+ * LubanCat-4: DSI0 on VP2 + EmbedFire EBF410173 7 inch 1024x600 panel + GT911 touch.
+ *
+ * Port of the vendor overlay
+ *   rk3588s-lubancat-4-dsi0-vp2-1024x600-7inch-ebf410173-overlay.dts
+ * from kernel-lbc-develop-6.1/arch/arm64/boot/dts/rockchip/overlay/.
+ *
+ * The panel is driven by the panel-embedfire-ebf410173 driver this kernel package adds;
+ * the vendor needed no driver because its panel-simple read the power-on sequence out of
+ * the device tree, which mainline cannot do. Everything else is the same wiring: the DSI
+ * PHY and host, the video path VP2 -> DSI0, the PWM backlight on pwm2m0, the panel power
+ * rail on gpio1 RK_PD2, and the touch controller on i2c5.
+ *
+ * Pins of the plain (non-V1) board revision: the vendor base tree rk3588s-lubancat-4.dts
+ * puts the panel reset on gpio0 RK_PB7 and the touch reset on gpio0 RK_PC0. The pinctrl
+ * groups in that same file for those two signals (dsi0_reset = gpio0 RK_PD7, tp1_irq =
+ * gpio3 RK_PC4) do not match its own overlay, which is how you can tell the base copy is
+ * the stale one: only in the V1 files do pinctrl and overlay agree. Use
+ * rk3588s-lubancat4-dsi0-ebf410173-v1.dtso for the other revision.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+#include <dt-bindings/soc/rockchip,vop2.h>
+
+/*
+ * Board level parts first: the panel node below points at both of these, and dtc has to
+ * have seen a label before a phandle to it can become a symbol of this overlay.
+ *
+ * The power rail is a GPIO regulator on gpio1 RK_PD2, on in the vendor board dts with
+ * regulator-boot-on / regulator-always-on, so the panel rail does not depend on the
+ * panel driver probing.
+ */
+/ {
+	/*
+	 * These two are NEW nodes, not edits of existing ones, so they have to be wrapped in a
+	 * fragment that names the root by path. Written plainly at the top level of a plugin, dtc
+	 * keeps them as children of the overlay blob's own "/" -- check with
+	 *     dtc -I dtb -O dts <something>.dtbo
+	 * -- and an overlay applier only applies "__overlay__" subtrees, so the nodes are dropped
+	 * silently while panel@0 keeps a backlight/power-supply phandle that points at nothing.
+	 * That is not hypothetical: on the .dtbo these files replace, "pwm-backlight" appeared zero
+	 * times in the tree produced by fdtoverlay, and the check that was supposed to catch this
+	 * only counted how many lines the overlay patched (the dangling phandle is one of them).
+	 *
+	 * The applier on this board is U-Boot's libfdt: lib/libfdt/fdt_overlay.c is nothing but an
+	 * #include of scripts/dtc/libfdt/fdt_overlay.c, that file reads "target-path" and resolves
+	 * it with fdt_path_offset, and the u-boot binary this package builds contains the literal
+	 * string "target-path" -- so targeting "/" is supported by the code that actually runs.
+	 * rk3588s-lubancat4-xl9535.dtso already used this form for the same reason.
+	 *
+	 * fragment@100 is numbered by hand on purpose: the &label{} fragments in this file are
+	 * numbered implicitly by dtc starting at 0, and a clash would be a confusing error.
+	 */
+	fragment@100 {
+		target-path = "/";
+
+		__overlay__ {
+			mipi_dsi0_power: mipi-dsi0-power-regulator {
+				compatible = "regulator-fixed";
+				regulator-name = "mipi_dsi0_power";
+				gpio = <&gpio1 RK_PD2 GPIO_ACTIVE_HIGH>;
+				enable-active-high;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			/*
+			 * 40 kHz PWM (period 25000 ns) and the vendor's 256 entry brightness ramp, taken
+			 * verbatim from rk3588s-lubancat-4.dts rather than written from scratch.
+			 */
+			backlight_dsi0: backlight-dsi0 {
+				compatible = "pwm-backlight";
+				pwms = <&pwm2 0 25000 0>;
+				brightness-levels = <0 20 20 21 21 22 22 23 23 24 24 25 25 26 26 27 27 28 28 29 29 30 30 31 31 32 32 33 33 34 34 35 35 36 36 37 37 38 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255>;
+				default-brightness-level = <200>;
+			};
+		};
+	};
+};
+
+/*
+ * The DSI PHY is disabled in rk3588-base.dtsi and no rk3588 board enables it for DSI0
+ * yet, so without this fragment nothing on the lanes comes up at all.
+ */
+&mipidcphy0 {
+	status = "okay";
+};
+
+&pwm2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm2m0_pins>;
+};
+
+&dsi0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	panel@0 {
+		compatible = "embedfire,ebf410173";
+		reg = <0>;
+		backlight = <&backlight_dsi0>;
+		power-supply = <&mipi_dsi0_power>;
+		reset-gpios = <&gpio0 RK_PB7 GPIO_ACTIVE_LOW>;
+
+		port {
+			mipi_panel_in: endpoint {
+				remote-endpoint = <&dsi0_out_panel>;
+			};
+		};
+	};
+};
+
+/*
+ * Video path. The SoC tree leaves dsi0_in / dsi0_out and the VP outputs unconnected,
+ * because which video plane feeds which output is a board choice; the shape is what
+ * mainline boards such as rk3588s-gameforce-ace.dts use, with VP2 as the vendor picked
+ * (its overlay file name says dsi0-vp2).
+ */
+&dsi0_in {
+	dsi0_in_vp2: endpoint {
+		remote-endpoint = <&vp2_out_dsi0>;
+	};
+};
+
+&dsi0_out {
+	dsi0_out_panel: endpoint {
+		remote-endpoint = <&mipi_panel_in>;
+	};
+};
+
+&vp2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	vp2_out_dsi0: endpoint@ROCKCHIP_VOP2_EP_MIPI0 {
+		reg = <ROCKCHIP_VOP2_EP_MIPI0>;
+		remote-endpoint = <&dsi0_in_vp2>;
+	};
+};
+
+&i2c5 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5m3_xfer>;
+
+	gt911@5d {
+		compatible = "goodix,gt911";
+		reg = <0x5d>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <RK_PC5 IRQ_TYPE_LEVEL_LOW>;
+		/* Goodix drives logical 0 then 1; keep physical levels uninverted. */
+		reset-gpios = <&gpio0 RK_PC0 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
+		/* The vendor overlay wrote these as "= <1>"; the binding declares them
+		 * boolean, so the flag form is the one dtc and the schema agree on. */
+		touchscreen-inverted-x;
+		touchscreen-inverted-y;
+	};
+};

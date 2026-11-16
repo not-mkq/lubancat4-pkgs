@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * EmbedFire LubanCat-4 (RK3588S2) with NPU and RGA3 enabled.
+ * Rationale for every address: COOKBOOK.md section 9.
+ */
+
+/dts-v1/;
+
+#include "rk3588s-lubancat-4.dts"
+
+/ {
+	model = "Embedfire LubanCat-4 (RK3588S2) with NPU enabled";
+	compatible = "embedfire,lubancat-4-npu", "embedfire,lubancat-4", "rockchip,rk3588s";
+};
+
+/* Firmware loaded by the first stage lives in DRAM and is not described by the
+ * upstream device tree; without these reservations Linux would hand those pages out.
+ */
+/ {
+	reserved-memory {
+		bl31@40000 {
+			reg = <0x0 0x00040000 0x0 0x00040000>;	/* BL31 v1.48, 204860 B payload */
+			no-map;
+		};
+		bl31-aux@f0000 {
+			reg = <0x0 0x000f0000 0x0 0x00010000>;	/* container atf-3, 24576 B */
+			no-map;
+		};
+		optee@8400000 {
+			reg = <0x0 0x08400000 0x0 0x01000000>;	/* OP-TEE: TEEOS 2M + TA 12M + SHM 2M */
+			no-map;
+		};
+		bl32-aux@ff100000 {
+			reg = <0x0 0xff100000 0x0 0x00010000>;	/* container atf-2, 36864 B */
+			no-map;
+		};
+	};
+};
+
+/* Each NPU core needs its MMU enabled together with it. */
+&rknn_core_0 { status = "okay"; };
+&rknn_mmu_0 { status = "okay"; };
+&rknn_core_1 { status = "okay"; };
+&rknn_mmu_1 { status = "okay"; };
+&rknn_core_2 { status = "okay"; };
+&rknn_mmu_2 { status = "okay"; };
+
+&rga3_core0 { status = "okay"; };
+&rga3_0_mmu { status = "okay"; };
+&rga3_core1 { status = "okay"; };
+&rga3_1_mmu { status = "okay"; };
+
+/* vpu121 (H.264/H.265) stays disabled: mainline has the devicetree node but no
+ * driver claiming rockchip,rk3588-vpu121 / rockchip,rk3588-rkvenc.
+ */

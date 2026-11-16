@@ -1,0 +1,5 @@
+# Arch Linux ARM mirrors. First Server wins, the rest are fallbacks.
+# USTC first (mkq's choice), TUNA second, official last; https where the mirror serves it.
+Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo

@@ -1,0 +1,16 @@
+# Second boot entry: the Rockchip BSP kernel, appended by scripts/03-mkimg.sh only when
+# linux-lubancat4-bsp and its board tree are installed. @BSP_KVER@ is the BSP kernel release.
+# Everything is rooted under /bsp so it cannot collide with the mainline entry above:
+#   /bsp/Image                                  the kernel
+#   /bsp/dtbs/rockchip/rk3588s-lubancat-4-v1.dtb  EmbedFire's tree, compiled against 6.12
+#   /bsp/overlays/*.dtbo                        overlays built against that same base tree
+# The append line is the BSP one: the vendor kernel registers the console as ttyFIQ0, and
+# earlycon needs the same 0xfeb50000 UART the mainline entry uses. console=tty1 is the DSI panel:
+# CONFIG_FRAMEBUFFER_CONSOLE in bsp.config gives it a console backed by the DRM driver's fbdev,
+# so kernel messages and the login prompt appear on the screen as well as on the serial line.
+# tty1 comes second on purpose - whichever console= comes first becomes /dev/console.
+label bsp
+  menu label Arch Linux ARM @BSP_KVER@ (BSP, LubanCat-4 V1 DSI1)
+  linux /bsp/Image
+  fdt /bsp/dtbs/rockchip/rk3588s-lubancat-4-v1.dtb
+  append root=PARTUUID=@ROOT_PU@ rootflags=subvol=@ rootfstype=btrfs rootwait rw console=ttyFIQ0,1500000n8 console=tty1 earlycon=uart8250,mmio32,0xfeb50000 loglevel=7 consoleblank=0 cma=256M

@@ -1,0 +1,22 @@
+# Template for /boot/extlinux/extlinux.conf (@KVER@ and @ROOT_PU@ are substituted).
+# Why these five choices: COOKBOOK.md section 7.
+#
+# Two kernels may be installed side by side, and each entry owns its own device tree and
+# overlay directory because the two trees are not interchangeable:
+#   arch  linux-lubancat4-git  /Image      /dtbs/rockchip/...      /overlays/...
+#   bsp   linux-lubancat4-bsp  /bsp/Image  /bsp/dtbs/rockchip/...  /bsp/overlays/...
+# A mainline .dtbo is compiled against the mainline base tree and a vendor .dtbo against the
+# BSP base tree; applying one to the other either fails to apply or patches the wrong nodes.
+# scripts/03-mkimg.sh writes this file, appends the BSP entry (extlinux-bsp.conf.in) only when
+# the BSP kernel and its board tree are actually installed, and fills the per-entry overlay
+# lines through lubancat4-overlay, which edits one label at a time.
+default arch
+menu title U-Boot menu
+prompt 20
+timeout 5
+
+label arch
+  menu label Arch Linux ARM @KVER@ (mainline, LubanCat-4)
+  linux /Image
+  fdt /dtbs/rockchip/rk3588s-lubancat4-npu.dtb
+  append root=PARTUUID=@ROOT_PU@ rootflags=subvol=@ rootfstype=btrfs rootwait rw console=ttyS2,1500000n8 earlycon=uart8250,mmio32,0xfeb50000 loglevel=7 consoleblank=0 cma=256M

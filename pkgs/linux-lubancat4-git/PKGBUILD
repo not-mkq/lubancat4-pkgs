@@ -1,0 +1,371 @@
+# Maintainer: mkq <mkq@mail.ustc.edu.cn>
+# Mainline kernel for the EmbedFire LubanCat-4. The config baseline is Arch Linux ARM's
+# current linux-aarch64 config (fetched by URL, never vendored) with lubancat.config on top.
+#
+# The -git suffix is not decoration: the source is a branch of a git tree and pkgver() is
+# computed from the commit count, so two builds a week apart are different packages even if
+# nobody edited anything here. That is what the suffix tells the user, and it is why the
+# version carries r<commits>.
+pkgbase=linux-lubancat4-git
+pkgname=("${pkgbase}" "${pkgbase}-headers")
+_branch=master
+pkgver=7.4.0.rc2.r1506753
+pkgrel=6
+pkgdesc='Mainline Linux for EmbedFire LubanCat-4 (RK3588S2), tracking Linus tree'
+arch=('aarch64')
+url='https://kernel.org'
+license=('GPL-2.0-only')
+makedepends=('bc' 'bison' 'flex' 'libelf' 'git' 'dtc' 'python')
+options=('!debug' '!strip')
+
+# Cross or native, decided from the host instead of hardcoded. On the board the system gcc is
+# already the right compiler; anywhere else the cross toolchain is pulled in and its prefix is
+# handed to make. Building on x86_64 still needs CARCH=aarch64 makepkg, because arch=() says
+# aarch64 and that is not a lie worth papering over with 'any'.
+if [[ $(uname -m) != aarch64 ]]; then
+  makedepends+=('aarch64-linux-gnu-gcc')
+  _cross=aarch64-linux-gnu-
+fi
+_mk=(ARCH=arm64 PYTHON=python3)
+[[ -n ${_cross:-} ]] && _mk+=(CROSS_COMPILE="$_cross")
+source=("git+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git#branch=$_branch"
+        'lubancat4-arch-default-kernel.install'
+        'config.base::https://raw.githubusercontent.com/archlinuxarm/PKGBUILDs/master/core/linux-aarch64/config'
+        'lubancat.config'
+        'rk3588s-lubancat4-npu.dts'
+        'rk3588s-lubancat4-hdmi0-sound.dtso'
+        'rk3588s-lubancat4-xl9535.dtso'
+        'rk3588s-lubancat4-xl9535-v1.dtso'
+        'rk3588s-lubancat4-dsi0-ebf410173.dtso'
+        'rk3588s-lubancat4-dsi0-ebf410173-v1.dtso'
+        'rk3588s-lubancat4-dsi1-ebf410173.dtso'
+        'rk3588s-lubancat4-dsi1-ebf410173-v1.dtso'
+        'panel-embedfire-ebf410173.c'
+        'check-overlays.py')
+# The config is intentionally not pinned: it tracks what Arch Linux ARM ships today.
+# Everything the image needs built-in is asserted by scripts/01-kernel-config.sh in the
+# companion repo ~/RK3588s2/lubancat4-arch, and by the checks in package() below.
+sha256sums=(  'SKIP'
+  '9e7b360afb43e1e92033c48cb065bd7cd1831598b83dd8374f95eb7e0db9b8ed'
+  '4f7895971b8fdc0e3a7155ef0a7af3d075970a95974557c223dea2d95914a701'
+  'd1a9d8927d3594838092861208f966c3c764fdfdb529f1df3aecbb528562935b'
+  '75cbb3a35b9e12fe35f98e821b3eb1ca75b57b14aeb00e8cd22f2aa7abec2ee6'
+  'c04cff5fa9c471af96f651ed79be3bb5b9826bba50fc89df7156b88a1a711640'
+  '7faa8f231667589861cb577ad6c043653ccda8aa58f56302d1fd51a7aa4ca6a2'
+  '33dbb34d3d7d858c7c8ee0a046387885e02335ab9f72f0cf6b0ae189a9a895d7'
+  '5adfb27c2a3b3ea4cd30fd3fd7a43096e41751652363f85106508c0754e8fdfa'
+  '89fe76e3def849471ea5b2ff5b10330ab0db7633566f75309c1e875bf1ed0f53'
+  'edd7ea719f3a834964cc87af03b59e5bc9b7aa00870984483951845a904c95da'
+  '5d0187a251f20e62ddab15592ef0b7f82595c9e62b65ee26887430232f75f44f'
+  '7e5b8963b66ddf3a2b2ed3b1042f62a26b2f7d0bd7b8cb7f550128b71e077663'
+  'b25569604e71490cfe2ef2edff9371eb65e346f17b869a9b9d6ed668379d9dd8'
+)
+
+pkgver() {
+  cd linux
+  local v
+  v=$(make -s kernelversion)
+  printf '%s.r%s' "${v//-/.}" "$(git rev-list --count HEAD)"
+}
+
+prepare() {
+  cd linux
+  # Order matters: register everything that adds a Kconfig symbol BEFORE the configs are
+  # merged, because merge_config.sh drops symbols kconfig has never heard of and
+  # olddefconfig will not put them back. That is how CONFIG_DRM_PANEL_EMBEDFIRE_EBF410173
+  # ended up silently unset the first time.
+  # Board device trees are registered in the tree's own Makefile instead of carried as a
+  # .patch, so a kernel bump cannot break the build. Lines this PKGBUILD adds carry a
+  # trailing marker and are dropped first, so a rebuild in a reused src dir cannot
+  # inherit the registration of a previous version (that is how a renamed overlay would
+  # otherwise linger as "no rule to make target ...").
+  local mk=arch/arm64/boot/dts/rockchip/Makefile
+  sed -i '/ # lubancat4$/d' "$mk"
+  install -m644 "$srcdir/rk3588s-lubancat4-npu.dts" arch/arm64/boot/dts/rockchip/
+  echo 'dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588s-lubancat4-npu.dtb # lubancat4' >> "$mk"
+  # Option overlays: the port of the vendor /overlay + uEnv switch set. Upstream builds
+  # a .dtbo from a .dtso (scripts/Makefile.dtbs: "$(obj)/%.dtbo: $(src)/%.dtso"), so the
+  # sources use that extension and the rules are the kernel's own: a fragment whose
+  # target label is gone from the base tree breaks the build here.
+  local ov
+  for ov in "$srcdir"/*.dtso; do
+    install -m644 "$ov" arch/arm64/boot/dts/rockchip/
+    echo "dtb-\$(CONFIG_ARCH_ROCKCHIP) += $(basename "$ov" .dtso).dtbo # lubancat4" >> "$mk"
+  done
+  # A runtime overlay needs the base blob to carry a /__symbols__ node, and the kernel
+  # only emits one when it is asked to: scripts/Makefile.dtbs adds -@ automatically for a
+  # base that is merged into a composite -dtbs target, and for anything else the knob is
+  # per target, "DTC_FLAGS_<target stem> := -@" (see arch/arm64/boot/dts/allwinner/Makefile).
+  # Without it, applying an overlay fails at boot with FDT_ERR_BADOFFSET and the hint
+  # "base blob does not have a '/__symbols__' node" - for us on the board, in U-Boot.
+  echo 'DTC_FLAGS_rk3588s-lubancat4-npu := -@ # lubancat4' >> "$mk"
+  # Panel driver for the EBF410173 screen. It is out of tree because upstream has nothing
+  # for that panel and the vendor has no driver either (its panel-simple reads the init
+  # sequence from the device tree, a property mainline does not parse), so the commands
+  # live here as driver data, the way panel-boe-himax8279d.c carries its own.
+  # Kconfig and Makefile entries are delimited by a begin/end pair instead of a .patch:
+  # a patch on those two files breaks on every kernel bump, this does not.
+  install -m644 "$srcdir/panel-embedfire-ebf410173.c" drivers/gpu/drm/panel/
+  local pf=drivers/gpu/drm/panel/Kconfig
+  local pm=drivers/gpu/drm/panel/Makefile
+  sed -i '/^# BEGIN lubancat4$/,/^# END lubancat4$/d' "$pf" "$pm"
+  cat >> "$pf" <<'EOF'
+# BEGIN lubancat4
+config DRM_PANEL_EMBEDFIRE_EBF410173
+	tristate "EmbedFire EBF410173 7 inch DSI panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	help
+	  Panel driver for the EmbedFire EBF410173 1024x600 DSI screen sold for the
+	  LubanCat-4. Its power-on command sequence is baked in here because it is not
+	  described anywhere in the device tree: the vendor tree reads it from the
+	  panel-init-sequence property, which mainline does not understand.
+# END lubancat4
+EOF
+  echo '# BEGIN lubancat4' >> "$pm"
+  echo 'obj-$(CONFIG_DRM_PANEL_EMBEDFIRE_EBF410173) += panel-embedfire-ebf410173.o' >> "$pm"
+  echo '# END lubancat4' >> "$pm"
+  # Goodix needs uninverted GPIO levels in the mainline overlays. Do not change
+  # the initial GPIO direction: reset_no_int_sync() sets output direction again.
+  # Config now: Arch Linux ARM's current config as the baseline, our fragment on top,
+  # then resolve. Never edit the Arch config by hand; the fragment is the diff.
+  cat "$srcdir/config.base" > ./.config
+  ./scripts/kconfig/merge_config.sh -m ./.config "$srcdir/lubancat.config"
+  make ARCH=arm64 olddefconfig </dev/null >/dev/null
+}
+
+build() {
+  cd linux
+  # Only the toolchain prefix and the target arch, both decided by the CARCH test above.
+  # Forcing KCFLAGS or LD is not part of a cross build: it drops the flags the vdso link
+  # needs and hands aarch64 objects to the host linker ("unrecognised emulation mode:
+  # aarch64linux"). No -j here: the user sets MAKEFLAGS in /etc/makepkg.conf.
+  make "${_mk[@]}" Image
+  make "${_mk[@]}" dtbs
+  make "${_mk[@]}" modules
+}
+
+package_linux-lubancat4-git() {
+  pkgdesc='Mainline Linux for EmbedFire LubanCat-4 (RK3588S2), tracking Linus tree'
+  # Runs after install and after remove. The script only moves the global "default" line in
+  # /boot/extlinux/extlinux.conf to `label arch`, and does nothing when that label or the file
+  # is not there, so pacstrap (config not written yet) is a no-op.
+  install=lubancat4-arch-default-kernel.install
+  # kmod belongs here, not only in makedepends: depmod's output is read at boot by kmod's
+  # 60-depmod.hook and by modprobe at runtime.
+  depends=('kmod' 'coreutils')
+  # This installs to the same /boot/Image and /boot/dtbs paths Arch Linux ARM's own kernel
+  # package uses, so the two cannot coexist. Declare it the way ALARM declares its own
+  # relationship towards the official linux package: provide the name, conflict with it.
+  # Without the declaration pacman fails in the middle of a transaction with a file conflict,
+  # after half the package is already unpacked.
+  provides=("linux=$pkgver" "linux-aarch64=$pkgver")
+  conflicts=('linux' 'linux-aarch64')
+
+  cd linux
+  local kver
+  kver=$(make "${_mk[@]}" -s kernelrelease)
+
+  install -Dt "$pkgdir/boot" -m644 arch/arm64/boot/Image
+  make "${_mk[@]}" INSTALL_DTBS_PATH="$pkgdir/boot/dtbs" dtbs_install
+  # Ship only the Rockchip device trees. dtbs_install installs every arm64 platform in the
+  # tree; measured on this build that is 19.0 MiB of rockchip/ plus 92.8 MiB of Amlogic,
+  # NVIDIA, TI, ... trees that can never run on this board - and all of it lands in /boot,
+  # the one partition that cannot be grown from the running board. ALARM ships every tree
+  # because linux-aarch64 targets all aarch64 boards; this package targets one board and its
+  # family, and keeping the whole rockchip/ directory still allows experimenting with the
+  # other Rockchip boards.
+  local dtbdir="$pkgdir/boot/dtbs" keep
+  for keep in "$dtbdir"/*/; do
+    [[ -d $keep && $keep != */rockchip/ ]] || continue
+    rm -rf "$keep"
+  done
+  [[ -f $dtbdir/rockchip/rk3588s-lubancat4-npu.dtb ]] ||
+    { echo "the board dtb is gone after trimming the device trees"; exit 1; }
+  echo "  dtbs   : $(find "$dtbdir" -name '*.dtb' | wc -l) device trees, $(du -sm "$dtbdir" | cut -f1) MiB"
+  # DEPMOD=/doesnt/exist is what Arch Linux ARM itself uses: never let the host run depmod
+  # for a foreign architecture. kmod's 60-depmod.hook does it on the target.
+  make "${_mk[@]}" INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 DEPMOD=/doesnt/exist modules_install
+
+  # Both are symlinks into the build tree, so -f is enough; -r would follow the habit of
+  # treating them like directories they are not.
+  rm -f "$pkgdir/usr/lib/modules/$kver"/{build,source}
+  install -Dm644 .config "$pkgdir/usr/lib/modules/$kver/config"
+
+  # Everything that *verifies* the build lives in check(), which runs before packaging: a
+  # broken config or an overlay that does not apply should stop the build, not be discovered
+  # in the middle of fakeroot, and definitely not on the board over the serial console.
+
+  # Option overlays go to /boot/overlays/<short>.dtbo: the board prefix is dropped, and
+  # that short name is what `lubancat4-overlay enable <short>` takes. Driven by the list of
+  # our own .dtso sources - globbing the build directory would also pick up the .dtbo of
+  # every other Rockchip board in the tree.
+  rm -f "$pkgdir"/boot/dtbs/rockchip/*.dtbo
+  local o d ov n=0
+  for ov in "$srcdir"/*.dtso; do
+    d=$(basename "$ov" .dtso)
+    o="arch/arm64/boot/dts/rockchip/$d.dtbo"
+    [[ -s $o ]] || { echo "no .dtbo was built from $(basename "$ov")"; exit 1; }
+    d=${d#rk3588s-lubancat4-}
+    install -Dm644 "$o" "$pkgdir/boot/overlays/$d.dtbo"
+    n=$((n + 1))
+  done
+  (( n > 0 )) || { echo "no .dtbo built - the overlay list is broken"; exit 1; }
+
+  # The .dtbo files are validated in check(); here they are only placed.
+}
+# Only the git tree is SKIP, and only because a branch has no single hash to pin. Everything
+# else is pinned, including the files that live in this repository: a local edit should be a
+# deliberate act, and a changed upstream file must stop the build rather than be silently
+# compiled. Regenerate after editing one of them with:
+#   makepkg -g
+
+# Verification, before anything is packaged. Two reasons it is not in package(): a failure
+# here should stop the build rather than be discovered halfway through fakeroot, and the
+# overlays can be validated against the build tree directly, so there is no reason to run
+# dtbs_install first and then delete other boards' .dtbo from $pkgdir just to have something
+# to test. `makepkg --nocheck` skips this whole function; scripts/01-build.sh never passes it.
+check() {
+  cd linux
+  local s d pv ko o out tmp n=0 fdtov base
+
+  # No initramfs: everything needed to mount root must be built in, and btrfs needs the zstd
+  # codec at mount time. The storage list is wider than the TF card this board normally boots
+  # from: an NVMe on a PCIe adapter and an external USB SSD are both plausible root devices,
+  # and with no initramfs a driver that is =m there means the device does not exist yet when
+  # the kernel tries to mount root. rootwait in extlinux.conf buys the time, the PHY drivers
+  # below bring the lanes up. PHY_ROCKCHIP_NANENG_COMBO_PHY is =m in Arch's config and is
+  # forced =y in lubancat.config for exactly that reason.
+  for s in BTRFS_FS EXT4_FS MMC_BLOCK MMC_DW MMC_DW_ROCKCHIP MMC_SDHCI_OF_DWCMSHC \
+           SERIAL_8250_DW SERIAL_8250_CONSOLE DEVTMPFS DEVTMPFS_MOUNT \
+           CRYPTO_ZSTD SECURITY_LANDLOCK \
+           NVME_CORE BLK_DEV_NVME PCIE_DW_HOST PCIE_ROCKCHIP_HOST \
+           PHY_ROCKCHIP_SNPS_PCIE3 PHY_ROCKCHIP_NANENG_COMBO_PHY PHY_ROCKCHIP_TYPEC \
+           PHY_ROCKCHIP_INNO_USB2 PHY_ROCKCHIP_USB \
+           USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3 USB_DWC3_OF_SIMPLE \
+           USB_EHCI_HCD_PLATFORM USB_OHCI_HCD_PLATFORM USB_STORAGE USB_UAS \
+           USB_HID HID_GENERIC; do
+    grep -q "^CONFIG_$s=y$" ./.config || { echo "CONFIG_$s must be =y (no initramfs)"; exit 1; }
+  done
+
+  [[ -s arch/arm64/boot/Image ]] || { echo "build produced no Image"; exit 1; }
+  for d in rk3588s-lubancat-4 rk3588s-lubancat4-npu; do
+    [[ -s arch/arm64/boot/dts/rockchip/$d.dtb ]] || { echo "build produced no $d.dtb"; exit 1; }
+  done
+
+  # The screen is not boot critical, so nothing else here would notice if the panel driver
+  # dropped out of the build; it fails as "no picture" on the board, which reads like a
+  # broken tree. =y is unreachable: MIPI_DSI is =m in Arch's config and kconfig silently
+  # downgrades a symbol whose dependency is a module - that is the failure this check caught
+  # the first time. So: y or m, and if m, the .ko has to exist.
+  pv=$(sed -n 's/^CONFIG_DRM_PANEL_EMBEDFIRE_EBF410173=//p' ./.config)
+  case $pv in
+    y) ;;
+    m) [[ -s drivers/gpu/drm/panel/panel-embedfire-ebf410173.ko ]] ||
+         { echo "CONFIG_DRM_PANEL_EMBEDFIRE_EBF410173=m but the .ko was not built"; exit 1; } ;;
+    *) echo "CONFIG_DRM_PANEL_EMBEDFIRE_EBF410173 is not set at all"; exit 1 ;;
+  esac
+
+  # The overlays reference DSI/backlight/touch/keys/i2c drivers. If upstream config.base
+  # drops or downgrades any of these, the .dtbo files still build and apply, and the board
+  # fails as "no picture / no touch / no keys" with a green build. Pin each symbol here and
+  # require the .ko when it is =m so the failure is caught at package time.
+  # BACKLIGHT_PWM is deliberately =y (built-in), so it has no .ko under the module tree;
+  # the check therefore accepts =y without looking for a file.
+  local ovmod ovko ovv
+  for ovmod in \
+      'DRM_ROCKCHIP drivers/gpu/drm/rockchip/rockchipdrm.ko' \
+      'DRM_DW_MIPI_DSI2 drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi2.ko' \
+      'PHY_ROCKCHIP_SAMSUNG_DCPHY drivers/phy/rockchip/phy-rockchip-samsung-dcphy.ko' \
+      'BACKLIGHT_PWM drivers/video/backlight/pwm_bl.ko' \
+      'TOUCHSCREEN_GOODIX drivers/input/touchscreen/goodix_ts.ko' \
+      'GPIO_PCA953X drivers/gpio/gpio-pca953x.ko' \
+      'KEYBOARD_GPIO drivers/input/keyboard/gpio_keys.ko' \
+      'I2C_RK3X drivers/i2c/busses/i2c-rk3x.ko' \
+      'PWM_ROCKCHIP drivers/pwm/pwm-rockchip.ko'; do
+    set -- $ovmod
+    ovv=$(sed -n "s/^CONFIG_$1=//p" ./.config)
+    ovko=$2
+    case $ovv in
+      y) ;;
+      m) [[ -s $ovko ]] || { echo "CONFIG_$1=m but $ovko was not built"; exit 1; } ;;
+      *) echo "CONFIG_$1 is not set but an overlay depends on it"; exit 1 ;;
+    esac
+  done
+
+  # Overlays get a content check, not a volume check. check-overlays.py says why: this test
+  # used to be "it applies, and the merged tree differs from the base", and that version passed
+  # four .dtbo files that never delivered their backlight or panel power rail -- the dangling
+  # phandle left behind is itself one of the differing lines, so the old check read it as proof.
+  # The tree's own dtc/fdtoverlay go first on PATH so the check uses the same libfdt the build
+  # system uses for its composite -dtbs targets.
+  base="arch/arm64/boot/dts/rockchip/rk3588s-lubancat4-npu.dtb"
+  [[ -s $base ]] || { echo "no base dtb to check overlays against"; exit 1; }
+  PATH="$PWD/scripts/dtc:$PATH" python3 "$srcdir/check-overlays.py" \
+    "$base" "arch/arm64/boot/dts/rockchip" ||
+    { echo "overlay content checks failed"; exit 1; }
+}
+
+package_linux-lubancat4-git-headers() {
+  pkgdesc='Headers and scripts for building external kernel modules for linux-lubancat4-git'
+  depends=("linux-lubancat4-git=$pkgver-$pkgrel" 'binutils' 'elfutils' 'perl' 'python')
+  provides=("linux-headers=$pkgver" "linux-aarch64-headers=$pkgver")
+  conflicts=('linux-headers' 'linux-aarch64-headers')
+
+  cd linux
+  local kver builddir f n
+  kver=$(make "${_mk[@]}" -s kernelrelease)
+  builddir="$pkgdir/usr/lib/modules/$kver/build"
+
+  # What an external module build actually reads: the top Makefile, the Kbuild machinery in
+  # scripts/, the headers, Module.symvers (the exported symbol CRCs) and every Kconfig. The
+  # file list follows Arch Linux ARM's own _package-headers().
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/arm64" -m644 arch/arm64/Makefile
+  install -Dt "$builddir/arch/arm64/kernel" -m644 arch/arm64/kernel/asm-offsets.s
+  cp -t "$builddir" -a scripts include
+  cp -t "$builddir/arch/arm64" -a arch/arm64/include
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  echo "  dropping other architectures..."
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */arm64/ ]] && continue
+    rm -rf "$arch"
+  done
+  rm -rf "$builddir/Documentation"
+  find -L "$builddir" -type l -delete
+  find "$builddir" -type f -name '*.o' -delete
+
+  # The cross-compile trap. scripts/ is full of host programs - fixdep, modpost, dtc, conf -
+  # and kbuild builds them with HOSTCC, which on an x86_64 host means x86_64 binaries. Those
+  # are the very programs an external module build executes, so shipping them to the board is
+  # an "Exec format error" waiting to happen. They cannot simply be cross rebuilt with
+  # HOSTCC=aarch64-linux-gnu-gcc: fixdep is itself built with HOSTCC and is then run by the
+  # host to build every other host object (scripts/Kbuild.include: cmd_and_fixdep executes
+  # $(objtree)/scripts/basic/fixdep), so an aarch64 fixdep deadlocks the build on its first
+  # compiled host program. Delete them instead. kbuild compiles what it needs natively on the
+  # board the first time a module is built; `make -C /usr/lib/modules/<kver>/build scripts`
+  # does it up front.
+  if [[ $(uname -m) != aarch64 ]]; then
+    n=0
+    # Which machine? Read e_machine, the two little-endian bytes at offset 18 of the ELF header,
+    # where 62 is EM_X86_64. The previous version grepped readelf's `Machine: ... X86-64` line;
+    # that is program output written for people, and it is exactly the kind of thing that stops
+    # matching in another locale or another binutils build. Magic bytes and a number cannot.
+    while IFS= read -r -d '' f; do
+      magic=$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d '[:space:]')
+      emach=$(od -An -j18 -N2 --endian=little -tu2 "$f" 2>/dev/null | tr -d '[:space:]')
+      if [[ $magic == 7f454c46 && $emach == 62 ]]; then
+        rm -f "$f"
+        n=$((n + 1))
+      fi
+    done < <(find "$builddir/scripts" -type f -perm -u+x -print0)
+    (( n > 0 )) || { echo "expected host tools under scripts/ and found none - check this"; exit 1; }
+    echo "  dropped $n host-architecture tools (they get rebuilt natively on the board)"
+  fi
+
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}

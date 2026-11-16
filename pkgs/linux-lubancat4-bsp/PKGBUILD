@@ -1,0 +1,303 @@
+# Maintainer: mkq <mkq@mail.ustc.edu.cn>
+# Rockchip BSP kernel (branch develop-6.12, kernel 6.12.69) for the LubanCat-4 line: the
+# vendor driver set that mainline does not carry - Mali valhall (G610) in drivers/gpu/arm,
+# the rknpu NPU driver in drivers/rknpu, RGA3 in drivers/video/rockchip/rga3 and the
+# VeriSilicon codec set in drivers/media/platform/verisilicon. That is what Rockchip's
+# closed userspace (libmali, librknnrt, libmpp) expects to find on the other side of the
+# ioctl, which is the whole reason to keep a second kernel next to the mainline one.
+#
+# Pinned tarball, so no -git suffix: one sha256, one source, reproducible. The version is read
+# out of the tarball's Makefile, not guessed (VERSION/PATCHLEVEL/SUBLEVEL = 6.12.69).
+#
+# What this tree does NOT contain, checked rather than assumed:
+#   tar -tzf ... | grep dts/rockchip/.*lubancat  ->  rk3566-lubancat-1.dts, rk3568-lubancat-2.dts
+# i.e. Rockchip's BSP carries the older EmbedFire boards but no LubanCat-4 device tree at all
+# (EmbedFire ships LubanCat-4 board files in their own fork, and the vendor image for this board
+# runs 5.10). Booting this kernel on the board therefore needs the board dts ported onto it,
+# which is tracked in TODO.md; packaging it is the part done here.
+pkgname=linux-lubancat4-bsp
+_pkgver_kernel=6.12.69
+pkgver=$_pkgver_kernel
+pkgrel=6
+pkgdesc='Rockchip BSP Linux 6.12 for EmbedFire LubanCat-4 (vendor GPU/NPU/codec drivers)'
+arch=('aarch64')
+url='https://github.com/rockchip-linux/kernel'
+license=('GPL-2.0-only')
+# Trimmed to what a plain Image/dtbs/modules build of this tree actually invokes. Extra
+# packages get added here only when a build says it needs them, never in advance.
+makedepends=('bc' 'bison' 'flex' 'libelf' 'dtc' 'python' 'perl')
+options=('!debug' '!strip')
+
+# Cross or native, asked of the machine (CARCH is the package's target, not the host).
+if [[ $(uname -m) != aarch64 ]]; then
+  makedepends+=('aarch64-linux-gnu-gcc')
+  _cross=aarch64-linux-gnu-
+fi
+_mk=(ARCH=arm64 PYTHON=python3)
+[[ -n ${_cross:-} ]] && _mk+=(CROSS_COMPILE="$_cross")
+# Cross compiler aliases are not supplied by Arch's ccache wrapper directory.
+# Use the wrapper explicitly for both Kconfig probes and compilation.
+if command -v ccache >/dev/null 2>&1; then
+  _mk+=(CC="ccache ${_cross:-}gcc" HOSTCC="ccache gcc" HOSTCXX="ccache g++")
+fi
+# LOCALVERSION belongs in the shared make argument list rather than in one invocation: it is
+# part of kernel.release, and kernel.release names /usr/lib/modules/<that string>, so every
+# step has to agree on it. Set it for Image but not for modules_install and the modules land in
+# a directory named after a kernel uname never reports - modprobe then finds nothing, and
+# depmod on the board is not even the thing at fault. It also keeps `uname -r` distinguishable
+# from the mainline package kernel and from any other 6.12.69 on the machine.
+_mk+=(LOCALVERSION=-bsp)
+
+# The source is a pinned commit of rockchip-linux/kernel, branch develop-6.12. It used to be a
+# 252 MiB tarball dropped into distfiles/, which made a fresh clone unable to build. A commit sha
+# is just as reproducible and lets makepkg fetch it. The sha below was checked against the
+# tarball that was in use: drivers/input/touchscreen/goodix.c and the Makefile version
+# (6.12.69) are identical, and the tree still carries only the rk3566/rk3568 LubanCat boards.
+_upstream=develop-6.12
+_upstream_commit=470f9dccbdc42e7b8a824d0a5c5640a10e9457d2
+_srcname=kernel-$_upstream_commit
+source=("$_srcname.tar.gz::https://github.com/rockchip-linux/kernel/archive/$_upstream_commit.tar.gz"
+        'bsp.config'
+        'vendor-dts.tar.gz'
+        'lubancat4-bsp-default-kernel.install')
+sha256sums=(
+  '3b6da867142d24b7d0282763debc072992f5d3bccc8c3dd7c9e68186b0284990'
+  '31d3c5d699a9230b3443c968fb6a820bfefcd46a04bcdf06ca1717a6b6953ae7'
+  '617a17e679de2d7fc687c49626dfd98f0a2f54ffe011d64bc5269ba2575f86d0'
+  '36bd85c79f7d6f87637d72c92e65842b688fc0cf8e6da7b10031b36a58facdb6'
+)
+
+prepare() {
+  cd "$_srcname"
+  # The tree's own defconfig as baseline, our fragment on top, then let kconfig resolve.
+  # The defconfig is never edited; every local difference lives in bsp.config.
+  make "${_mk[@]}" rockchip_linux_defconfig
+  # rk3588.config is part of the tree, not ours: Rockchip composes an RK3588 kernel as
+  # rockchip_linux_defconfig + rk3588.config, and those four lines are what enable the G610
+  # driver (CONFIG_MALI_VALHALL). Merging it is reproducing the vendor recipe, not editing it.
+  ./scripts/kconfig/merge_config.sh -m ./.config arch/arm64/configs/rk3588.config
+  ./scripts/kconfig/merge_config.sh -m ./.config "$srcdir/bsp.config"
+  make "${_mk[@]}" olddefconfig </dev/null >/dev/null
+
+  # Board trees. Rockchip's BSP carries EmbedFire's rk3566/rk3568 boards but no LubanCat-4,
+  # so the two LubanCat-4 trees and their overlays come in as vendor-dts.tar.gz and are
+  # compiled out of tree by build_board_dts() below. Nothing is written into the kernel
+  # tree, so dtbs/dtbs_install stay purely Rockchip's own boards.
+}
+
+build() {
+  cd "$_srcname"
+  make "${_mk[@]}" Image
+  make "${_mk[@]}" dtbs
+  make "${_mk[@]}" modules
+  build_board_dts
+}
+
+# Compile one LubanCat-4 tree or overlay against the BSP tree without editing it.
+# 6.12 merged the USB/DP PHY subnodes and renamed the HDMI PHY label, so the vendor files are
+# rewritten on the way through cpp. The rewrite is textual and only renames labels; every other
+# line is EmbedFire's. Output: $srcdir/board-dtbs/{*.dtb,overlays/*.dtbo}.
+build_board_dts() {
+  local ksrc="$srcdir/$_srcname" vdts="$srcdir/vendor-dts"
+  local out="$srcdir/board-dtbs" src="$srcdir/board-dts-src" pre name target
+  [[ -d $vdts/rockchip ]] || { echo "vendor-dts.tar.gz did not unpack"; return 1; }
+  rm -rf "$out" "$src"
+  mkdir -p "$out/overlays"
+  cp -a "$vdts" "$src"
+  local f
+  for f in "$src"/rockchip/*.dts "$src"/rockchip/*.dtsi "$src"/rockchip/*.dtso; do
+    [[ -e $f ]] || continue
+    sed -i 's/usbdp_phy0_u3/usbdp_phy0/g; s/usbdp_phy0_dp {/usbdp_phy0 {/g; s/hdptxphy_hdmi0/hdptxphy0/g' "$f"
+  done
+  for f in "$src"/rockchip/*.dts "$src"/rockchip/*.dtso; do
+    [[ -e $f ]] || continue
+    name=$(basename "$f")
+    pre="$src/$name.pre"
+    if [[ $name == *.dtso ]]; then
+      target="$out/overlays/${name%.dtso}.dtbo"
+    else
+      target="$out/${name%.dts}.dtb"
+    fi
+    cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+      -I "$src/rockchip" -I "$ksrc/arch/arm64/boot/dts/rockchip" -I "$ksrc/include" -I "$src" \
+      "$f" -o "$pre" || { echo "cpp failed: $name"; return 1; }
+    dtc -@ -I dts -O dtb -o "$target" "$pre" 2>"$src/$name.log" || {
+      echo "dtc failed: $name"; cat "$src/$name.log"; return 1; }
+  done
+  local n_dtb n_dtbo
+  n_dtb=$(find "$out" -maxdepth 1 -name '*.dtb' | wc -l)
+  n_dtbo=$(find "$out/overlays" -name '*.dtbo' | wc -l)
+  echo "  board  : $n_dtb LubanCat device trees, $n_dtbo overlays"
+  for f in rk3588s-lubancat-4.dtb rk3588s-lubancat-4-v1.dtb; do
+    [[ -s $out/$f ]] || { echo "board build produced no $f"; return 1; }
+  done
+}
+
+package() {
+  pkgdesc='Rockchip BSP Linux 6.12 for EmbedFire LubanCat-4 (vendor GPU/NPU/codec drivers)'
+  # Makes `label bsp` the default entry after install/remove. No-op when pacstrap installs
+  # this before extlinux.conf exists.
+  install=lubancat4-bsp-default-kernel.install
+  depends=('kmod' 'coreutils')
+
+  cd "$_srcname"
+  local kver
+  kver=$(make "${_mk[@]}" -s kernelrelease)
+
+  # A second kernel must not collide with the first one. The mainline package owns
+  # /boot/Image and /boot/dtbs (and provides/conflicts 'linux'); this one lives entirely under
+  # /boot/bsp, so pacman can have both installed.
+  #
+  # There is deliberately no boot entry in this package: extlinux.conf is one file for both
+  # kernels and lubancat4-overlay maintains a single fdtoverlays line for the whole file, so the
+  # BSP entry and its per-entry overlay list are generated by lubancat4-board-config and the
+  # image script, which know where this package installed its trees.
+  install -Dm644 arch/arm64/boot/Image "$pkgdir/boot/bsp/Image"
+  make "${_mk[@]}" INSTALL_DTBS_PATH="$pkgdir/boot/bsp/dtbs" dtbs_install
+
+  # Same trimming as the mainline package, one step further: dtbs_install walks every arm64
+  # vendor, and inside rockchip/ it walks every Rockchip SoC this board cannot run on. This
+  # package targets the rk3588 family, so that is all it ships. Measured on this tree: the
+  # rockchip/ install is 498 device trees and 95 MiB, of which rk3588* is 76 files and 22 MiB.
+  #
+  # Read that 76 as "Rockchip's own reference boards" - evb1/2/3, vehicle, tablet, toybrick.
+  # The board itself is covered separately: build_board_dts() compiles EmbedFire's trees out of
+  # tree, and they are installed below into $pkgdir/boot/bsp, not into the kernel's own dtbs
+  # directory, so this trimming cannot remove them.
+  # /boot is the one partition nobody can grow from the running board, and a second kernel is
+  # supposed to sit alongside the first, not fill it.
+  local dtbdir="$pkgdir/boot/bsp/dtbs" keep
+  for keep in "$dtbdir"/*/; do
+    [[ -d $keep && $keep != */rockchip/ ]] || continue
+    rm -rf "$keep"
+  done
+  find "$dtbdir/rockchip" -maxdepth 1 -name '*.dtb' ! -name 'rk3588*' -delete
+  ls "$dtbdir"/rockchip/rk3588*.dtb >/dev/null 2>&1 ||
+    { echo "no rk3588 device tree survived the trimming"; exit 1; }
+  echo "  dtbs   : $(find "$dtbdir" -name '*.dtb' | wc -l) device trees, $(du -sm "$dtbdir" | cut -f1) MiB"
+
+  # EmbedFire's board trees, kept apart from Rockchip's reference boards. U-Boot's extlinux
+  # bootmeth resolves fdt and fdtoverlays relative to the boot filesystem root, so these paths
+  # are what a menu entry names: /bsp/dtbs/rockchip/<board>.dtb and /bsp/overlays/<switch>.dtbo.
+  # The kernel is at /bsp/Image, so the whole BSP boot set lives under one directory and the
+  # mainline package's /boot/Image, /boot/dtbs and /boot/overlays stay untouched.
+  local bsrc="$srcdir/board-dtbs"
+  [[ -d $bsrc ]] || { echo "no $bsrc: build_board_dts() did not run"; exit 1; }
+  install -d "$pkgdir/boot/bsp/dtbs/rockchip" "$pkgdir/boot/bsp/overlays"
+  local f
+  for f in "$bsrc"/*.dtb; do
+    [[ -e $f ]] || continue
+    install -m644 "$f" "$pkgdir/boot/bsp/dtbs/rockchip/$(basename "$f")"
+  done
+  for f in "$bsrc"/overlays/*.dtbo; do
+    [[ -e $f ]] || continue
+    install -m644 "$f" "$pkgdir/boot/bsp/overlays/$(basename "$f")"
+  done
+  for f in rk3588s-lubancat-4.dtb rk3588s-lubancat-4-v1.dtb; do
+    [[ -s $pkgdir/boot/bsp/dtbs/rockchip/$f ]] || { echo "package is missing $f"; exit 1; }
+  done
+  echo "  board  : $(find "$pkgdir/boot/bsp/dtbs/rockchip" -name '*lubancat*.dtb' | wc -l) board trees, $(find "$pkgdir/boot/bsp/overlays" -name '*.dtbo' | wc -l) overlays"
+
+  # Never let the host run depmod for a foreign architecture (Arch Linux ARM's own trick);
+  # kmod's 60-depmod.hook does it on the target.
+  make "${_mk[@]}" INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 DEPMOD=/doesnt/exist modules_install
+  rm -f "$pkgdir/usr/lib/modules/$kver"/{build,source}
+  install -Dm644 .config "$pkgdir/usr/lib/modules/$kver/config-$kver"
+
+  echo "  bsp    : kernel $kver, $(find "$pkgdir/usr/lib/modules/$kver" -name '*.ko*' | wc -l) modules"
+}
+
+# Verified before packaging, like the mainline package. Only symbols this tree is expected to
+# know are asserted; if kconfig dropped one because the BSP names it differently, that is
+# reported instead of assumed, because with no initramfs a storage driver left at =m means the
+# root device does not exist yet when the kernel tries to mount it.
+check() {
+  cd "$_srcname"
+  local s missing=()
+
+  [[ -s ./.config ]] || { echo "no .config: prepare() did not run"; exit 1; }
+  local -a req=(BTRFS_FS EXT4_FS MMC_BLOCK MMC_DW MMC_DW_ROCKCHIP \
+           SERIAL_8250_DW SERIAL_8250_CONSOLE DEVTMPFS DEVTMPFS_MOUNT \
+           CRYPTO_ZSTD \
+           NVME_CORE BLK_DEV_NVME PCIE_DW_HOST PCIE_ROCKCHIP_HOST \
+           PHY_ROCKCHIP_SNPS_PCIE3 PHY_ROCKCHIP_NANENG_COMBO_PHY PHY_ROCKCHIP_TYPEC \
+           PHY_ROCKCHIP_INNO_USB2 PHY_ROCKCHIP_USB \
+           USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3 USB_DWC3_OF_SIMPLE \
+           USB_EHCI_HCD_PLATFORM USB_OHCI_HCD_PLATFORM USB_STORAGE USB_UAS \
+           USB_HID HID_GENERIC)
+  for s in "${req[@]}"; do
+    grep -q "^CONFIG_$s=y$" ./.config || missing+=("$s")
+  done
+  if (( ${#missing[@]} )); then
+    echo "these must be built-in for a root mount with no initramfs:"
+    printf '  %s\n' "${missing[@]}"
+    exit 1
+  fi
+  echo "  builtin: ${#req[@]} boot-path symbols are =y"
+
+  # Userspace capabilities. These are not about booting: they are what an Arch Linux userland
+  # assumes exists. rockchip_linux_defconfig targets Android/embedded and leaves them off, and
+  # without SECURITY there is no Landlock, which makes pacman refuse every transaction with
+  # "restricting filesystem access failed because Landlock is not supported by the kernel".
+  # The values follow the mainline package's config; a symbol silently dropped by kconfig shows
+  # up here instead of on the board.
+  local -a cap_y=(SECURITY SECURITY_LANDLOCK SECURITY_YAMA MEMCG PSI
+                  BPF_SYSCALL BPF_JIT CGROUP_BPF WATCH_QUEUE FANOTIFY
+                  KALLSYMS_ALL PROC_KCORE ENCRYPTED_KEYS ZSWAP NET_SCHED NET_CLS_ACT HIBERNATION)
+  local -a cap_m=(BLK_DEV_DM TRUSTED_KEYS DM_CRYPT OVERLAY_FS
+                  NET_CLS_BPF NET_ACT_BPF TUN VETH BRIDGE MACVLAN VLAN_8021Q NF_TABLES WIREGUARD)
+  missing=()
+  for s in "${cap_y[@]}"; do
+    grep -q "^CONFIG_$s=y$" ./.config || missing+=("$s=y")
+  done
+  for s in "${cap_m[@]}"; do
+    grep -qE "^CONFIG_$s=[ym]$" ./.config || missing+=("$s=m")
+  done
+  if (( ${#missing[@]} )); then
+    echo "these userspace capabilities are missing from .config:"
+    printf '  %s\n' "${missing[@]}"
+    exit 1
+  fi
+  grep -q '^CONFIG_LSM=".*landlock' ./.config || { echo "CONFIG_LSM does not enable landlock"; exit 1; }
+  echo "  caps   : $(( ${#cap_y[@]} + ${#cap_m[@]} )) userspace symbols present, landlock in LSM"
+
+  # Framebuffer console. Androide does not need fbcon, so the vendor defconfig leaves FB off and
+  # the DRM driver gets no fbdev emulation: the panel can be driven through DRM, but the kernel
+  # console never reaches it and nothing lights it at boot.
+  local -a fb=(FB FB_CORE DRM_FBDEV_EMULATION FRAMEBUFFER_CONSOLE FRAMEBUFFER_CONSOLE_DETECT_PRIMARY)
+  missing=()
+  for s in "${fb[@]}"; do
+    grep -q "^CONFIG_$s=y$" ./.config || missing+=("$s")
+  done
+  if (( ${#missing[@]} )); then
+    echo "framebuffer console is incomplete: ${missing[*]}"
+    exit 1
+  fi
+  echo "  fbcon  : ${#fb[@]} symbols are =y"
+
+  [[ -s arch/arm64/boot/Image ]] || { echo "build produced no Image"; exit 1; }
+  ls arch/arm64/boot/dts/rockchip/rk3588*.dtb >/dev/null 2>&1 ||
+    { echo "build produced no rk3588 device tree"; exit 1; }
+
+  # The point of this package: the vendor accelerators must actually be compiled in, otherwise
+  # it is just a second, older kernel with none of the reasons to boot it. =y or =m, and if =m
+  # the module has to exist.
+  # Names verified in this tree rather than remembered: drivers/gpu/arm/valhall/Kconfig
+  # (MALI_VALHALL, MALI_VALHALL_CSF_SUPPORT), drivers/rknpu/Kconfig (ROCKCHIP_RKNPU),
+  # drivers/media/platform/verisilicon/Kconfig (VIDEO_HANTRO_ROCKCHIP). The first four are
+  # fatal - without them this is only a second, older kernel with none of the reasons to boot it.
+  # The codec symbols are reported and not fatal: whether mpp needs them built in or as a
+  # module is a runtime question, and failing a 20-minute build over them is the wrong order.
+  local cfg v
+  for cfg in CONFIG_MALI_VALHALL CONFIG_MALI_VALHALL_CSF_SUPPORT CONFIG_DRM_ROCKCHIP CONFIG_ROCKCHIP_RKNPU; do
+    v=$(sed -n "s/^$cfg=//p" ./.config)
+    case $v in
+      y|m) echo "  vendor : $cfg=$v" ;;
+      *)   echo "  vendor : $cfg not set - this kernel has lost its reason to exist"; exit 1 ;;
+    esac
+  done
+  for cfg in CONFIG_VIDEO_HANTRO CONFIG_VIDEO_HANTRO_ROCKCHIP CONFIG_VIDEO_ROCKCHIP_RGA; do
+    v=$(sed -n "s/^$cfg=//p" ./.config)
+    echo "  codec  : $cfg=${v:-not set}"
+  done
+}

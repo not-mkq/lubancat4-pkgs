@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# One-shot hardware bring-up report for the LubanCat-4 image.
+# Everything it prints is read from sysfs/devfs or from the tools it finds; nothing is
+# inferred. Run as root if you want the dmesg sections (kernel.dmesg_restrict).
+#
+#   lubancat4-status            everything
+#   lubancat4-status -i 6       also i2cdetect bus 6
+set -uo pipefail
+
+BUS=""
+while getopts "i:h" o; do
+  case $o in
+    i) BUS=$OPTARG ;;
+    h) sed -n '2,10p' "$0"; exit 0 ;;
+    *) exit 2 ;;
+  esac
+done
+
+have() { command -v "$1" >/dev/null 2>&1; }
+sec()  { printf '\n\033[1m▌ %s\033[0m\n' "$1"; }
+run()  { printf '  $ %s\n' "$*"; "$@" 2>&1 | sed 's/^/    /'; }
+show() { [[ -e $1 ]] && { printf '  %s\n' "$1"; sed 's/^/      /' "$1" 2>/dev/null | head -20; } \
+         || printf '  %s ── 不存在\n' "$1"; }
+ls_dir() { printf '  %s\n' "$*"; ls -l "$@" 2>&1 | sed 's/^/      /'; }
+
+dt() { # read a devicetree property as text
+  local p="/proc/device-tree/$1"
+  [[ -r $p ]] && tr '\0' ' ' <"$p" || echo "── 没有 $1"
+}
+
+cat <<'BANNER'
+lubancat4-status - EmbedFire LubanCat-4 (RK3588S2) mainline bring-up report
+Each section says what the kernel actually created. Empty section = not there.
+BANNER
+
+sec "0. 这是哪台机器 / 跑的是什么"
+run uname -a
+printf '  model      : %s\n' "$(dt model)"
+printf '  compatible : %s\n' "$(dt compatible)"
+printf '  cmdline    : %s\n' "$(cat /proc/cmdline)"
+run findmnt -no TARGET,FSTYPE,OPTIONS /
+printf '  当前 dtb   : %s\n' "$(ls /sys/firmware/fdt 2>/dev/null || echo '?')"
+run ls -l /boot /boot/extlinux/extlinux.conf
+[[ -f /etc/lubancat4/overlays ]] && printf '  开关文件     : [%s]\n' "$(tr -s ' \n' ' ' </etc/lubancat4/overlays)"
+printf '  extlinux 里的那一行: %s\n' "$(grep -m1 fdtoverlays /boot/extlinux/extlinux.conf | sed 's/^[ \t]*//')"
+
+sec "1. overlay 到底被 U-Boot 打上去了没有"
+printf '  /proc/device-tree 顶层里我们关心的节点:\n'
+ls /proc/device-tree/ 2>/dev/null | grep -Ei 'gpio-expander|panel|gt911|backlight|__symbols__|dsi|mipi' | sed 's/^/      /' || echo "      （一个都没有）"
+for n in $(find /proc/device-tree -maxdepth 4 -name 'gpio-expander@*' -o -maxdepth 4 -name 'panel@*' -o -maxdepth 4 -name 'gt911@*' 2>/dev/null); do
+  printf '      %s\n' "${n#/proc/device-tree/}"
+  for f in compatible reg status; do
+    [[ -e $n/$f ]] && printf '        %-11s %s\n' "$f" "$(tr '\0' ' ' <$n/$f)"
+  done
+done
+printf '  基 dtb 的符号表: %s 条\n' "$(ls /proc/device-tree/__symbols__/ 2>/dev/null | wc -l)"
+
+sec "2. 显示：HDMI"
+for c in /sys/class/drm/card*-*/; do
+  [[ -d $c ]] || continue
+  printf '  %-34s status=%-8s %s\n' "$(basename "$c")" \
+    "$(cat "$c/status" 2>/dev/null)" \
+    "$(cat "$c/modes" 2>/dev/null | head -1)"
+done
+have modetest && run modetest -M rockchip -c 2>/dev/null | head -30
+
+sec "3. 显示：DSI 屏 + 背光"
+ls /sys/class/drm/ | grep -iE 'dsi|mipi|cmd|video' | sed 's/^/      /' || echo "      没有 DSI connector"
+for b in /sys/class/backlight/*/; do
+  [[ -d $b ]] || continue
+  printf '  背光 %-28s brightness=%s/%s  actual=%s  bl_power=%s\n' "$(basename "$b")" \
+    "$(cat "$b/brightness" 2>/dev/null)" "$(cat "$b/max_brightness" 2>/dev/null)" \
+    "$(cat "$b/actual_brightness" 2>/dev/null)" "$(cat "$b/bl_power" 2>/dev/null)"
+done
+[[ -d /sys/class/backlight ]] || echo "      /sys/class/backlight 不存在"
+
+dmesg_tail() { # 只贴和硬件有关的行
+  dmesg -T 2>/dev/null | grep -iE "$1" | tail -"${2:-40}" | sed 's/^/      /' \
+    || echo "      读不到 dmesg，请用 root 再跑一次"
+}
+
+sec "4. XL9535（i2c-6 上的 gpio 扩展芯片）"
+if have gpiodetect; then run gpiodetect; else echo "      没装 libgpiod（gpiodetect）"; fi
+for d in /sys/bus/i2c/devices/*-0021; do
+  [[ -d $d ]] || continue
+  printf '  %s\n' "$d"
+  printf '      of_node 兼容串: %s\n' "$(tr '\0' ' ' <$d/of_node/compatible 2>/dev/null)"
+  ls -l "$d/of_node" >/dev/null 2>&1 && printf '      driver: %s\n' "$(basename "$(readlink -f "$d/driver")" 2>/dev/null)"
+done
+if have gpioinfo; then
+  # libgpiod 2.x has no --all; bare gpioinfo already lists every chip.
+  run gpioinfo
+fi
+run ls -l /dev/gpiochip*
+
+sec "5. 触摸屏（gt911 on i2c-6）"
+run ls /sys/bus/i2c/devices/
+printf '  输入设备（有 gt911 就会多一条）:\n'
+grep -E '^Name|^Handlers' /proc/bus/input/devices 2>/dev/null | sed 's/^/      /' || echo "      读不到 /proc/bus/input/devices"
+
+sec "6. GPU（Mali-G610 / panthor）"
+run ls -l /dev/dri
+for c in /sys/class/drm/card[0-9]; do
+  [[ -d $c ]] || continue
+  printf '  %s driver=%s\n' "$(basename "$c")" "$(basename "$(readlink -f "$c/device/driver")" 2>/dev/null)"
+done
+printf '  panthor 固件（缺了就没有 GPU）:\n'
+ls -l /usr/lib/firmware/arm/mali/ 2>/dev/null | sed 's/^/      /' || echo "      /usr/lib/firmware/arm/mali 不存在 -> pacman -S linux-firmware-other"
+ls /usr/lib/firmware/arm/mali/arch10* 2>/dev/null | sed 's/^/      /'
+
+sec "7. NPU（rknn / rocket）"
+ls_dir /dev/accel 2>/dev/null || echo "      /dev/accel 不存在"
+for d in /sys/bus/platform/devices/*npu*; do
+  [[ -d $d ]] || continue
+  printf '  %-46s driver=%s\n' "$(basename "$d")" \
+    "$([[ -e $d/driver ]] && basename "$(readlink -f "$d/driver")" || echo '没绑')"
+done
+
+sec "8. RGA / VPU / CIF（V4L2）"
+run ls -l /dev/video* /dev/media* 2>/dev/null
+if have v4l2-ctl; then run v4l2-ctl --list-devices; else echo "      没装 v4l-utils"; fi
+if have media-ctl; then
+  # -e needs an entity name in this v4l-utils; -p (--print-topology) dumps the graph.
+  for m in /dev/media*; do [[ -e $m ]] && run media-ctl -d "$m" -p 2>/dev/null | head -20; done
+fi
+
+sec "9. 音频（HDMI0 sound）"
+if have aplay; then run aplay -l; run arecord -l; else echo "      没装 alsa-utils"; fi
+ls /sys/bus/platform/drivers/simple-audio-card 2>/dev/null | sed 's/^/      simple-audio-card 已绑: /'
+
+sec "10. I2C 总线"
+if have i2cdetect; then
+  run i2cdetect -l
+  [[ -n $BUS ]] && run i2cdetect -y "$BUS"
+else
+  echo "      没装 i2c-tools"
+fi
+
+sec "11. 我们的模块都加载了吗"
+lsmod | grep -iE 'rockchip|panthor|rocket|hantro|vdec|rga|drm|goodix|i2c_designware|dw_mipi|snd_soc' | sed 's/^/      /' || echo "      （没有相关模块）"
+
+sec "12. 还在等着什么东西（deferred probe）"
+if [[ -r /sys/kernel/debug/devices_deferred ]]; then
+  run cat /sys/kernel/debug/devices_deferred
+else
+  echo "      debugfs 没挂：mount -t debugfs none /sys/kernel/debug 之后再看"
+fi
+
+sec "13. dmesg 里跟这次启动有关的行"
+dmesg_tail 'rockchip|dw-mipi|dsi|panthor|rocket|rga|hantro|vdec|pca953|gpio|goodix|i2c|of:|overlay|deferred|error|fail|warn' 60
+
+printf '\n%s\n' "报告结束。整段贴回来即可，不用挑。"

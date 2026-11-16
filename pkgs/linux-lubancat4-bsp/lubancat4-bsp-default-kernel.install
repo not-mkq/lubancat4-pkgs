@@ -1,0 +1,17 @@
+# Runs after the BSP kernel package is installed or removed. Makes the "bsp" extlinux entry
+# the default one, so `pacman -S`/`-R` on the board moves the default without hand-editing
+# /boot/extlinux/extlinux.conf.
+#
+# The helper is shipped by lubancat4-board-config as /usr/lib/lubancat4/default-kernel-bsp.
+# It only rewrites the global "default" line and copies every other line through, so the
+# mainline entry and its fdtoverlays line are untouched. When the label or the config file is
+# absent it prints a note and exits 0: pacstrap installs this package before 03-mkimg.sh writes
+# extlinux.conf, and a failed scriptlet would abort that transaction.
+#
+# Exit status is always 0. A boot config that cannot be updated is a warning, not a reason to
+# leave a package half-installed.
+_helper=/usr/lib/lubancat4/default-kernel-bsp
+
+[ -x "$_helper" ] || exit 0
+"$_helper" || echo "warning: could not set the default extlinux entry to 'bsp'" >&2
+exit 0

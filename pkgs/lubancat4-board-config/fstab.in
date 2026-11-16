@@ -1,0 +1,3 @@
+# <file system>      <mount> <type> <options>                                                 <dump> <pass>
+PARTUUID=@BOOT_PU@   /boot   ext4   defaults,noatime                                          0      2
+PARTUUID=@ROOT_PU@   /       btrfs  defaults,noatime,compress=zstd:3,space_cache=v2,subvol=/@ 0      0

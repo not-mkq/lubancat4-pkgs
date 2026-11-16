@@ -1,0 +1,54 @@
+# pacman config used only while building the image (host side, target root not mounted yet).
+# @REPO@ is substituted by scripts/03-mkimg.sh with the absolute path of our package repo.
+# Repository sections mirror what Arch Linux ARM ships in /etc/pacman.conf:
+#   Architecture = aarch64, [core] [extra] [alarm] [aur], Server = http://mirror.archlinuxarm.org/$arch/$repo
+[options]
+HoldPkg     = pacman glibc
+Architecture = aarch64
+CheckSpace
+# For a slow uplink. pacman's default kills a transfer that stays under 1 B/s for 10 s,
+# which on this link happens routinely and aborts the whole transaction with
+# "Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds".
+# This is the option the man page itself names for that ("Use this if you have issues
+# downloading files"). Build-time only: the board's own /etc/pacman.conf is untouched.
+DisableDownloadTimeout
+# Fewer parallel streams: on a lossy link 5 concurrent fetches mostly means 5 stalls, and one
+# stalled stream aborts the whole transaction (pacman has no retry knob - neither
+# pacman.conf(5) nor `pacman -Sy --help` in 7.1 offers one, checked with man --help). The
+# retrying is done by scripts/03-mkimg.sh around the pacstrap call instead.
+ParallelDownloads = 2
+SigLevel    = Required DatabaseOptional
+LocalFileSigLevel = Optional
+
+[lubancat4]
+# The packages built here are not signed, and repo-add was run without -s, so the database
+# carries no %PGPSIG% (checked: zero occurrences). With [options]' Required, pacman wants a
+# signature for every package and goes looking for <name>.pkg.tar.zst.sig on the server; there
+# is no such file, and the transaction dies with "could not get ... .sig" / "unexpected error"
+# after everything else has been downloaded - which is exactly how it looks like a network
+# problem. man pacman.conf: "SigLevel ... valid in both the [options] and repository sections",
+# "Optional: signatures are checked if present; absence of a signature is not an error".
+# Chosen over Never on purpose: if these packages ever do get signed, a bad signature must
+# still fail the install. Official repos keep Required DatabaseOptional - the installed
+# system's own /etc/pacman.conf comes from the ALARM pacman package and is not touched here.
+SigLevel = Optional
+Server = file://@REPO@
+
+# [core]
+# First Server wins; the rest are fallbacks. USTC is mkq's mirror of choice and is also
+# the one reachable from the build container (mirror.archlinuxarm.org rate-limits and
+# truncates here). https so the fetch is not plain text on the wire.
+[core]
+Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+
+[extra]
+Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo
+
+[alarm]
+Server = https://mirrors.ustc.edu.cn/archlinuxarm/$arch/$repo
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo

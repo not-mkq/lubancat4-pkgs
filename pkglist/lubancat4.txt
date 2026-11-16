@@ -1,0 +1,78 @@
+# Everything the image installs, one package per line, '#' starts a comment.
+# Order does not matter; pacman resolves dependencies.
+# Read by scripts/03-mkimg.sh, which strips comments before calling pacstrap.
+
+# Arch's own group: filesystem, glibc, coreutils, systemd, pacman, kmod, ...
+base
+
+# btrfs-progs is in base; the root is btrfs with compress=zstd:3, nothing extra needed.
+# kmod ships /usr/share/libalpm/hooks/60-depmod.hook, so depmod runs automatically
+# whenever a package installs usr/lib/modules/<ver>/ (no .install needed in our kernel pkg).
+
+# our board packages
+linux-lubancat4-git
+# Second kernel: Rockchip's develop-6.12 tree, the only one that has the vendor Mali/RKNPU/MPP
+# drivers. Installs under /boot/bsp and /usr/lib/modules/6.12.69-bsp, so both kernels coexist
+# and the extlinux menu offers both. Its install hook sets `default bsp`; installing (or
+# reinstalling) the mainline package afterwards sets `default arch` back.
+linux-lubancat4-bsp
+uboot-lubancat4
+lubancat4-board-config
+
+# remote access: lubancat4-board-config enables sshd.service
+openssh
+
+# Interactive shell and editor, so the board is usable by hand on the serial console
+# or over ssh. fish is a separate package (not in base); vim is the default editor.
+fish
+vim
+
+# The board's own pacman must be able to trust ALARM's build key, or the first
+# `pacman -Syu` on the device fails exactly like a build host without the keyring does.
+# Installing it runs pacman-key --populate archlinuxarm through the package's own hook.
+archlinuxarm-keyring
+
+# Test kit for the bring-up this port claims. lubancat4-status reads these tools and
+# prints one report; without them it still runs but skips the sections.
+# Names checked against ALARM's own core.db/extra.db (versions in BOARD.md section 7).
+#   linux-firmware-other  the ONLY firmware split this board can use today. panthor builds
+#                   the path as "arm/mali/arch<MAJOR>.<MINOR>/mali_csffw.bin" from the GPU's
+#                   own ID registers (panthor_fw.c:811), and the rk3588 gpu node is
+#                   compatible = "rockchip,rk3588-mali", "arm,mali-valhall-csf", i.e. CSF, so
+#                   it really is panthor. linux-firmware-other ships arch10.8/10.10/10.12 and
+#                   on, which is what the module declares. 12 MiB download / 45 MiB installed.
+#                   Do NOT use the linux-firmware meta package here: it pulls 16 splits,
+#                   635 MiB download / 1.93 GiB installed, and every one of them except this
+#                   is amdgpu/nvidia/intel/qcom/mellanox firmware this SoC has no device for.
+#                   RGA3 and rkvdec need no firmware at all (grep finds no
+#                   request_firmware/MODULE_FIRMWARE in those two drivers).
+#   libdrm          modetest (modeset / connector / plane state)
+#   libgpiod        gpiodetect, gpioinfo, gpiomon - the only sane way to see an XL9535
+#   i2c-tools       i2cdetect, to check 0x21 on bus 6 and 0x5d on bus 5
+#   v4l-utils       v4l2-ctl --list-devices, media-ctl -p for RGA / VPU / CIF
+#   alsa-utils      aplay -l / arecord -l for the hdmi0-sound overlay
+#   dtc             dtc and fdtoverlay on the board, to re-apply an overlay by hand
+#   evtest          touch events from the panel's GT911
+linux-firmware-other
+libdrm
+libgpiod
+i2c-tools
+v4l-utils
+alsa-utils
+dtc
+evtest
+
+# Optional, uncomment when you want a GL or decode test rather than a driver-presence one:
+#   mesa-demos  es2_info / es2gears (needs a DRM master: run under weston or from a
+#               session on the panel)
+#   glmark2     same constraint
+#   weston      a compositor to own the display while testing GL
+# mesa-demos
+# glmark2
+# weston
+
+# The module's wifi/bt is an AP6275 = Broadcom, so its firmware would be
+# linux-firmware-broadcom (brcm/*). There is no point yet: the mainline rk3588s-lubancat-4.dts
+# has no wifi/bt node at all (grep for brcm/wifi/bluetooth in it finds nothing), so no driver
+# would ever ask for it. Fix the dtb first, then this line.
+# linux-firmware-broadcom

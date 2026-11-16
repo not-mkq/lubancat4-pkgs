@@ -1,0 +1,124 @@
+# Maintainer: mkq <mkq@mail.ustc.edu.cn>
+# Mainline U-Boot for the LubanCat-4, packaged by U-Boot's native Rockchip binman.
+# BL31 will prefer an open-source TF-A build; DDR training remains an external Rockchip input.
+# This package is *not* a -git package and must stay that way: the source is a tagged
+# release (v$pkgver) and pkgver is static, so two builds of the same PKGBUILD are the same
+# package. Tracking U-Boot master would mean renaming it uboot-lubancat4-git.
+pkgname=uboot-lubancat4
+pkgver=2026.10
+pkgrel=2
+pkgdesc='Mainline U-Boot 2026.10 with binman boot image for EmbedFire LubanCat-4 (RK3588S2)'
+arch=('aarch64')
+url='https://u-boot.org/'
+license=('GPL-2.0-only' 'BSD-3-Clause' 'LicenseRef-Rockchip')
+makedepends=('git' 'bc' 'bison' 'flex' 'python' 'swig' 'dtc' 'libelf' 'python-pyelftools'
+             'openssl' 'lz4' 'ncurses')
+
+# Cross or native, decided from the host instead of hardcoded: on the board the system gcc
+# is already the right compiler, anywhere else the cross toolchain is pulled in. Building on
+# x86_64 still needs CARCH=aarch64 makepkg, because arch=() says aarch64 honestly.
+if [[ $(uname -m) != aarch64 ]]; then
+  makedepends+=('aarch64-linux-gnu-gcc')
+  _cross=aarch64-linux-gnu-
+fi
+# ARCH=arm, not ARCH=arm64: U-Boot has no arch/arm64 (its tree has arch/arm, and 64-bit is
+# CONFIG_ARM64 inside it). The value only happened to work before because config.mk overrides
+# it - `ARCH := $(CONFIG_SYS_ARCH:"%"=%)` - but that override needs include/config/auto.conf
+# to exist, so any target run before the defconfig step sees the bogus ARCH through
+# Makefile:399 `ARCH ?= $(SUBARCH)` and dies on `include arch/arm64/Makefile`.
+_mk=(ARCH=arm)
+[[ -n ${_cross:-} ]] && _mk+=(CROSS_COMPILE="$_cross")
+
+source=("git+https://source.denx.de/u-boot/u-boot.git#tag=v$pkgver"
+        'git+https://github.com/TrustedFirmware-A/trusted-firmware-a.git#commit=a881364e03b0c5b3a8c00f20ad6fbdda53a57031'
+        'lubancat-4-rk3588s_defconfig'
+        'uboot-lubancat4.fragment'
+        'rk3588s-lubancat-4-u-boot.dtsi'
+        'rk3588s-lubancat-4.dts::https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/arch/arm64/boot/dts/rockchip/rk3588s-lubancat-4.dts?h=v7.4-rc2'
+        'rk3588-ddr-tpl.bin'
+        'rk3588_bl32_v1.23.bin'
+        'LICENSE.rkbin')
+sha256sums=(
+  'SKIP'
+  'SKIP'
+  '845e96417b4432fe0e17da83f91b4dc7c5a11a8d42187944829d3dc5a21dbc16'
+  'f33033c8e25ac6e54c3aa6ccd7da833853f86b214642071bd61b0a31af55aad5'
+  'b9d03b7faaaf61cdfc3182a7c6e9aec7c86f19c26c33619b16bdbb86fb4a74ab'
+  '415102ba0842e1c6e4520d13285a1d41e36ec8c7c48abdf4711ba647adde1cc1'
+  '7d114862d4958841886afc97cf82affb2bd88bc3b968f636e7e9ed898410c353'
+  'cb4ec2d0d8986b22cc55dbcf57c499f10fcca124bcd1e9a5d62cbf9ce0f40636'
+  '1b3cfbd212ef0e645b34aa6beee07343ce954a4f512338f12317ab297a9c9829'
+)
+
+prepare() {
+  # TF-A records DTC and its other build libraries as git submodules. makepkg's VCS
+  # checkout does not recurse into them, so initialize the exact commits recorded by
+  # the pinned TF-A revision before build() runs.
+  git -C "$srcdir/trusted-firmware-a" submodule update --init --recursive
+}
+
+build() {
+  cd u-boot
+  # No -j here: the user sets MAKEFLAGS in /etc/makepkg.conf.
+
+  # U-Boot's dts/upstream snapshot has no rk3588s-lubancat-4.dts, and the upstream
+  # defconfig therefore points at rk3588s-rock-5a, whose sdmmc/vmmc description is wrong
+  # for this board.
+  install -m644 "$srcdir/rk3588s-lubancat-4.dts" dts/upstream/src/arm64/rockchip/
+  install -m644 "$srcdir/rk3588s-lubancat-4-u-boot.dtsi" arch/arm/dts/
+
+  # Upstream has no LubanCat-4 defconfig; see the header of the file we ship.
+  install -m644 "$srcdir/lubancat-4-rk3588s_defconfig" configs/
+  make lubancat-4-rk3588s_defconfig </dev/null >/dev/null
+  ./scripts/kconfig/merge_config.sh -m .config "$srcdir/uboot-lubancat4.fragment" >/dev/null
+  make olddefconfig </dev/null >/dev/null
+
+  # The container loads U-Boot at 0x00200000, so U-Boot must be linked there.
+  [[ $(sed -n 's/^CONFIG_TEXT_BASE=//p' .config) == 0x00200000 ]] || {
+    echo 'CONFIG_TEXT_BASE must be 0x00200000'; exit 1; }
+  [[ $(sed -n 's/^CONFIG_DEFAULT_DEVICE_TREE=//p' .config | tr -d '"') == rockchip/rk3588s-lubancat-4 ]] || {
+    echo 'CONFIG_DEFAULT_DEVICE_TREE must be rockchip/rk3588s-lubancat-4'; exit 1; }
+
+  # This image is intentionally unsigned; enabling signature enforcement without a key
+  # would make the board reject the generated FIT.
+  for s in FIT_SIGNATURE SPL_FIT_SIGNATURE; do
+    grep -qE "^# CONFIG_$s is not set\$" .config || { echo "CONFIG_$s must be off"; exit 1; }
+  done
+
+  [[ $(grep -c '^CONFIG_BINMAN=y$' .config) == 1 ]] || {
+    echo 'CONFIG_BINMAN must be enabled'; exit 1; }
+  [[ $(grep -c '^CONFIG_ROCKCHIP_EXTERNAL_TPL=y$' .config) == 1 ]] || {
+    echo 'CONFIG_ROCKCHIP_EXTERNAL_TPL must be enabled'; exit 1; }
+
+  # Build open-source TF-A BL31 first. U-Boot binman receives this ELF through BL31 and
+  # receives the remaining DDR-training input through ROCKCHIP_TPL.
+  # /etc/makepkg.conf supplies host CFLAGS such as -march=x86-64. TF-A appends
+  # CFLAGS to its target AArch64 flags, so do not pass host optimization flags to
+  # the cross compiler.
+  # rkbin RK3588TRUST.ini specifies this raw BL32 entry address. Binman's
+  # split-elf operation also accepts the standard OP-TEE v1 header.
+  python3 - "$srcdir" <<'PY'
+import pathlib, struct, sys
+p = pathlib.Path(sys.argv[1])
+b = (p / 'rk3588_bl32_v1.23.bin').read_bytes()
+header = struct.pack('<IBBHIIIII', 0x4554504f, 1, 1, 0,
+                     len(b), 0, 0x08400000, 0, 0)
+(p / 'tee.bin').write_bytes(header + b)
+PY
+  env -u CFLAGS -u CPPFLAGS -u CXXFLAGS -u LDFLAGS \
+    make -C "$srcdir/trusted-firmware-a" BUILD_BASE="$srcdir/tf-a-optee-build" \
+    CROSS_COMPILE="${_cross:-}" PLAT=rk3588 DEBUG=0 SPD=opteed -j16 bl31
+  make "${_mk[@]}" BL31="$srcdir/tf-a-optee-build/rk3588/release/bl31/bl31.elf" \
+    TEE="$srcdir/tee.bin" ROCKCHIP_TPL="$srcdir/rk3588-ddr-tpl.bin" -j16
+
+}
+
+package() {
+  cd u-boot
+  install -Dm644 u-boot-rockchip.bin "$pkgdir/boot/u-boot-rockchip.bin"
+  [[ -s "$pkgdir/boot/u-boot-rockchip.bin" ]] || exit 1
+  install -Dm644 "$srcdir/LICENSE.rkbin" "$pkgdir/usr/share/licenses/$pkgname/LICENSE.rkbin"
+  # Sector 64 through the start of /boot at 16 MiB is available.
+  (( $(stat -c%s u-boot-rockchip.bin) <= 16 * 1024 * 1024 - 64 * 512 )) || {
+    echo 'u-boot-rockchip.bin does not fit in the raw boot area'; exit 1; }
+}

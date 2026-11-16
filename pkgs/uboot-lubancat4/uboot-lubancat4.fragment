@@ -1,0 +1,16 @@
+# Local U-Boot fragment on top of lubancat-4-rk3588s_defconfig.
+# Why each one: COOKBOOK.md section 6.
+CONFIG_DEFAULT_DEVICE_TREE="rockchip/rk3588s-lubancat-4"
+CONFIG_OF_LIST="rockchip/rk3588s-lubancat-4"
+CONFIG_DEFAULT_FDT_FILE="rockchip/rk3588s-lubancat-4.dtb"
+CONFIG_TEXT_BASE=0x00200000
+CONFIG_BINMAN=y
+CONFIG_ROCKCHIP_EXTERNAL_TPL=y
+# CONFIG_TOOLS_LIBCRYPTO is not set
+# CONFIG_TOOLS_KWBIMAGE is not set
+# CONFIG_SPL_FIT_SIGNATURE is not set
+# CONFIG_FIT_SIGNATURE is not set
+CONFIG_DEBUG_UART_ANNOUNCE=y
+CONFIG_LOG=y
+CONFIG_LOGLEVEL=7
+CONFIG_CMD_LOG=y

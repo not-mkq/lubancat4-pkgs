@@ -1,0 +1,69 @@
+pkg/
+src/
+repo/
+dist/
+*.pkg.tar.zst
+*.old
+
+# makepkg 偶尔会把 VCS 克隆落在 startdir 里（SRCDEST 没给的时候）。这些路径不含 src/ 或
+# pkg/，上面两条规则挡不住，曾经有 19 个文件被 git add -A 收进去过。
+pkgs/*/linux/
+pkgs/*/linux-*/
+pkgs/*/u-boot/
+pkgs/*/u-boot-*/
+
+# Downloaded sources that landed in a PKGBUILD dir because makepkg was run without
+# SRCDEST. They are inputs, not content: config.base and rk3588s-lubancat-4.dts are
+# fetched by URL; the Rockchip DDR blob is intentionally kept in the U-Boot package directory.
+pkgs/*/config.base
+pkgs/*/rk3588s-lubancat-4.dts
+pkgs/*/uboot.img
+pkgs/*/MiniLoaderAll.bin
+# The U-Boot PKGBUILD explicitly sources and hashes this required binary input.
+!pkgs/uboot-lubancat4/rk3588-ddr-tpl.bin
+# Build products and detached signatures.
+pkgs/*/*.pkg.tar.zst
+pkgs/*/*.pkg.tar.zst.sig
+
+# The BSP kernel snapshot: 252 MiB, so it lives in distfiles/ on disk and never in git
+# (the two small Rockchip blobs above are fine, a quarter of a gigabyte is not). Put
+# a snapshot of rockchip-linux/kernel branch develop-6.12 at
+#   distfiles/kernel-develop-6.12.tar.gz
+# and makepkg checks it against the sha256 pinned in pkgs/linux-lubancat4-bsp/PKGBUILD.
+distfiles/*.tar.gz
+pkgs/*/*.tar.gz
+# The BSP board trees are small (52 KiB) and the BSP PKGBUILD lists them in source=(), so they
+# belong in the repository. The kernel snapshot above is the one that stays out.
+!pkgs/linux-lubancat4-bsp/vendor-dts.tar.gz
+
+# Working directories and logs of this repo's own tooling: bsp-dts-probe.sh builds its
+# symlink farm under .scratch/, and 01-build.sh keeps one log per package build. Both are
+# regenerable, neither is content.
+.scratch/
+build-logs/
+
+# Build products, serial captures and extracted boot regions. Regenerable from the sources
+# above, and some of it (dump.bin below) is raw data read from a card rather than content.
+artifacts/
+
+# Input, not content: the vendor boot image unpacked next to the PKGBUILD that consumes it.
+pkgs/*/vendor-uboot.img
+
+# makepkg VCS checkouts and unpacked source trees that land inside a package directory when
+# SRCDEST is not set. The PKGBUILDs fetch these; they are never content.
+pkgs/*/trusted-firmware-a/
+pkgs/*/u-boot/
+pkgs/*/u-boot-rockchip.bin
+pkgs/*/linux/
+pkgs/*/linux-*/
+pkgs/*/vendor-dts/
+pkgs/*/configs-tmp
+
+# Python bytecode from the checkers and the test programs.
+__pycache__/
+*.pyc
+
+# distfiles holds downloaded and vendor inputs: the 252 MiB kernel tarball, the vendor boot
+# image, the MiniLoader. The two small blobs a package actually needs live next to its PKGBUILD
+# and are pinned by sha256 there; the rest is fetched, never stored.
+distfiles/

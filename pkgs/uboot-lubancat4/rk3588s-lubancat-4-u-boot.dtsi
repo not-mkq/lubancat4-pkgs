@@ -1,0 +1,14 @@
+/* U-Boot side additions for the LubanCat-4.
+ * scripts/Makefile.lib includes arch/arm/dts/<board>-u-boot.dtsi automatically when the
+ * control DTB is rockchip/rk3588s-lubancat-4, so this file must NOT include the board dts
+ * itself - only overlays. Same shape as the other rk3588s board files in this directory.
+ */
+#include "rk3588s-u-boot.dtsi"
+
+/* The card-detect pin reads "card present" high on this board, which makes U-Boot's
+ * sdmmc driver see no card, so bootflow scan finds nothing. Upstream uses the same
+ * workaround for the same controller on rk3588-evb1-rk806.dtsi.
+ */
+&sdmmc {
+	broken-cd;
+};

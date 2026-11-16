@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * XL9535 I2C GPIO expander on the LubanCat-4 40-pin header, for board revision V1 (silkscreen EBF410116 V1R1).
+ *
+ * Ported from the vendor overlay overlay/rk3588s-lubancat-4-v1-xl9535-overlay.dts (the vendor ships one file per board revision;
+ * they differ in exactly two places, see below). The part is PCA9535-compatible and the
+ * vendor devicetree says so itself (compatible = "nxp,pca9535"), so mainline's
+ * drivers/gpio/gpio-pca953x.c claims it unchanged - no driver work was needed.
+ *
+ * The two revisions swap the two pins:
+ *   base : expander IRQ on gpio1 RK_PA0, DSI touch reset on gpio0 RK_PC0
+ *   V1   : expander IRQ on gpio0 RK_PC0, DSI touch reset on gpio1 RK_PA0
+ * so enabling the base variant of this overlay on a V1 board puts the IRQ on the pin the
+ * touch controller drives (and vice versa). Both files keep the vendor's pinctrl setting
+ * for the IRQ line: &pcfg_pull_up, not pull_none.
+ *
+ * The Keys / Coder_* nodes are copied from the vendor fragment, which places them on
+ * expander lines: 3/4/5 -> KEY_0/1/2 (user keys), 7 -> KEY_3 (encoder push button),
+ * 12/13/14 -> 250/251/252 rising-edge (encoder A/B; 250..252 are unassigned holes in
+ * uapi/linux/input-event-codes.h - KEY_MICMUTE is 0xf8, BTN_MISC is 0x100 - but they are
+ * what the vendor shipped, so they stay). gpio_keys.ko is in the kernel package
+ * (CONFIG_KEYBOARD_GPIO=m). Dropped from the vendor copy: gpio-hog on the key children
+ * (a hog property on a node that is not a child of the gpio controller does nothing in
+ * mainline, and hogging would fight gpio-keys for the same line) and the per-child
+ * interrupt-parent/interrupts (gpio-keys derives the IRQ from the GPIO descriptor).
+ *
+ * Not ported, from the same vendor file: the dht11 fragment. It uses compatible
+ * "fire,temphum_dht11", an EmbedFire driver that mainline does not have, on
+ * &gpio3 RK_PC0 - a dead binding would only reserve the pin.
+ */
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/input/linux-event-codes.h>
+
+/ {
+	fragment@0 {
+		target = <&i2c6>;
+
+		__overlay__ {
+			status = "okay";
+			pinctrl-names = "default";
+			pinctrl-0 = <&i2c6m3_xfer>;
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			xl9535: gpio-expander@21 {
+				compatible = "nxp,pca9535";
+				reg = <0x21>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				interrupt-parent = <&gpio0>;
+				interrupts = <RK_PC0 IRQ_TYPE_LEVEL_LOW>;
+				interrupt-controller;
+				#interrupt-cells = <2>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&xl9535_irq>;
+			};
+		};
+	};
+
+	/*
+	 * The vendor overlay names a pinctrl group (pinctrl_xl9535) that lives in its own
+	 * board file; mainline's rk3588 pincrtl has no such group, so the IRQ pin
+	 * configuration is created here with the same pull as the vendor's.
+	 */
+	fragment@1 {
+		target = <&pinctrl>;
+
+		__overlay__ {
+			xl9535-pins {
+				xl9535_irq: xl9535-irq {
+					rockchip,pins = <0 RK_PC0 RK_FUNC_GPIO &pcfg_pull_up>;
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/";
+
+		__overlay__ {
+			Keys {
+				compatible = "gpio-keys";
+				pinctrl-names = "default";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				key-0 {
+					label = "KEY_0";
+					linux,code = <KEY_0>;
+					gpios = <&xl9535 3 GPIO_ACTIVE_LOW>;
+				};
+
+				key-1 {
+					label = "KEY_1";
+					linux,code = <KEY_1>;
+					gpios = <&xl9535 4 GPIO_ACTIVE_LOW>;
+				};
+
+				key-2 {
+					label = "KEY_2";
+					linux,code = <KEY_2>;
+					gpios = <&xl9535 5 GPIO_ACTIVE_LOW>;
+				};
+			};
+
+			Coder_sw {
+				compatible = "gpio-keys";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				coder-sw {
+					label = "coder_sw";
+					linux,code = <KEY_3>;
+					debounce-interval = <5>;
+					gpios = <&xl9535 7 GPIO_ACTIVE_LOW>;
+				};
+			};
+
+			Coder_A {
+				compatible = "gpio-keys";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				coder-a {
+					label = "coder_A";
+					linux,code = <250>;
+					debounce-interval = <1>;
+					gpios = <&xl9535 12 GPIO_ACTIVE_HIGH>;
+				};
+			};
+
+			Coder_B {
+				compatible = "gpio-keys";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				coder-b {
+					label = "coder_B";
+					linux,code = <251>;
+					debounce-interval = <1>;
+					gpios = <&xl9535 13 GPIO_ACTIVE_HIGH>;
+				};
+			};
+
+			Coder_C {
+				compatible = "gpio-keys";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				coder-c {
+					label = "coder_C";
+					linux,code = <252>;
+					debounce-interval = <1>;
+					gpios = <&xl9535 14 GPIO_ACTIVE_HIGH>;
+				};
+			};
+		};
+	};
+};

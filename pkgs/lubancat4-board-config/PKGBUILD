@@ -1,0 +1,135 @@
+# Maintainer: mkq <mkq@mail.ustc.edu.cn>
+# Board tooling for the EmbedFire LubanCat-4 on mainline. This package holds only files a
+# package may legitimately own: programs, unit overrides, templates. Everything that is
+# per-image identity (hostname, locale, mirror list) and every service enable lives in
+# scripts/03-mkimg.sh instead - see the notes at the bottom of package().
+pkgname=lubancat4-board-config
+pkgver=1
+pkgrel=6
+pkgdesc='Board tooling for EmbedFire LubanCat-4 (RK3588S2) running Arch Linux ARM'
+arch=('any')
+url='https://github.com/wasmkq/lubancat4-arch'
+license=('GPL-2.0-only')
+depends=('openssh' 'systemd' 'util-linux')
+makedepends=()
+source=('50-lubancat.network' 'extlinux.conf.in' 'extlinux-bsp.conf.in'
+        'fstab.in' 'lubancat4-flash-boot' 'lubancat4-overlay' 'lubancat4-status' 'overlays.conf'
+        'overlays-bsp.conf' 'lubancat4-default-kernel.hook')
+sha256sums=(  'ef3d31ec6bc0dd2cecfd04c2dc8a942d033550fb1a3d7e6b26543dfeb11149ba'
+  '367aa5e014809aecc79d73e4f8a6b1ab92e54069725adcc53b2bc85804d8a5dc'
+  '34ccd25eb17475e7416dd65c01e6eb52244169394445d98e7dcde1a5580aec33'
+  '2b9ae86e82927762d62cdab3db7dec1c0b1875451b542613ec74e496e71eeeb9'
+  'a7bc861ba3f8dd1a862556897ae4b69b4c8039f0c9baf161c6e1ebd2103d3500'
+  'f56b6bab9ed4cb265b2a0dedcb17102e19ca052ef4b82065003c828c2c736699'
+  'f2b4573adb33583220e7e39fa08101dc9955f26c2c9288e08ded9ef7799b4992'
+  '888aaa1dba6c44ca274935124644b9b8b65598a1f78c2ed591b1ef71ed581c81'
+  '06e1641ed27177c188f45a0b3f9c2eadb384dc90ce7430101533c5f54d57642f'
+  '865dd3e0db73607b21b1d0d691597b82020bd9e2936084d29f206baa07937cfb'
+)
+backup=('etc/systemd/network/50-lubancat.network' 'etc/lubancat4/overlays'
+        'etc/lubancat4/overlays-bsp')
+
+# Nothing here needs the target to run: every file in this package is text, so the checks are
+# static and cheap, and they are the kind of mistake that only shows up on a serial console at
+# 3am ("Login incorrect" forever, or a template that silently ships @ROOT_PU@ to the card).
+check() {
+  cd "$srcdir"
+  local f bad=0
+
+  # 1. The shell tools must parse.
+  for f in lubancat4-flash-boot lubancat4-overlay lubancat4-status; do
+    if ! bash -n "$f"; then echo "check: $f does not parse"; bad=1; fi
+  done
+
+  # 2. Templates may contain only the placeholders the image script actually substitutes, and
+  #    must still contain them; anything else in @...@ would reach the card verbatim.
+  for f in extlinux.conf.in extlinux-bsp.conf.in fstab.in; do
+    if ! grep -q -- '@ROOT_PU@' "$f"; then
+      echo "check: $f lost @ROOT_PU@, which scripts/03-mkimg.sh substitutes"; bad=1
+    fi
+    if grep -o '@[A-Z_]*@' "$f" | grep -v -e '@ROOT_PU@' -e '@BOOT_PU@' -e '@KVER@' -e '@BSP_KVER@' | grep -q .; then
+      echo "check: $f contains a placeholder nothing substitutes: $(grep -o '@[A-Z_]*@' "$f" | sort -u | tr '\n' ' ')"; bad=1
+    fi
+  done
+
+  # 4. The overlay switch list feeds an "fdtoverlays" line in extlinux.conf, so a stray space,
+  #    slash or shell metacharacter in an entry would corrupt the boot config.
+  if grep -vE '^[[:space:]]*(#|$)' overlays.conf | grep -vE '^[a-z0-9._-]+$' | grep -q .; then
+    echo "check: overlays.conf holds something that is not a bare overlay name:"
+    grep -vE '^[[:space:]]*(#|$)' overlays.conf | grep -vE '^[a-z0-9._-]+$' | sed 's/^/       /'
+    bad=1
+  fi
+
+  if ! grep -q 'label bsp' extlinux-bsp.conf.in; then
+    echo "check: extlinux-bsp.conf.in has no 'label bsp'"; bad=1
+  fi
+  if grep -q 'fdtoverlays' extlinux-bsp.conf.in; then
+    echo "check: extlinux-bsp.conf.in hardcodes fdtoverlays; it comes from /etc/lubancat4/overlays-bsp"; bad=1
+  fi
+
+  # The hook script is POSIX sh and must parse before it ends up as an install scriptlet.
+  f=lubancat4-default-kernel.hook
+  if ! sh -n "$f" 2>/dev/null; then
+    echo "check: $f does not parse"; bad=1
+  fi
+  if ! grep -q '@LABEL@' "$f"; then
+    echo "check: $f lost @LABEL@, which package() substitutes per kernel"; bad=1
+  fi
+
+  return $bad
+}
+
+package() {
+  cd "$srcdir"
+  install -Dm644 50-lubancat.network "$pkgdir/etc/systemd/network/50-lubancat.network"
+
+  # No serial getty override any more. The image sets a root password and systemd's
+  # getty-generator creates serial-getty@ttyS2.service from console=ttyS2 on its own, taking
+  # the baud rate from that same parameter. An autologin override would defeat the password.
+
+  # Templates. The real fstab/extlinux.conf get their PARTUUID filled by the image script,
+  # because the UUIDs only exist once the partition table has been written. They stay in
+  # /usr/share (read-only templates, never in backup=()), which is where a package may put
+  # them; the generated files in /boot and /etc belong to the image, not to a package.
+  install -Dm644 extlinux.conf.in "$pkgdir/usr/share/lubancat4/extlinux.conf.in"
+  install -Dm644 extlinux-bsp.conf.in "$pkgdir/usr/share/lubancat4/extlinux-bsp.conf.in"
+  install -Dm644 fstab.in         "$pkgdir/usr/share/lubancat4/fstab.in"
+
+  install -Dm755 lubancat4-flash-boot "$pkgdir/usr/bin/lubancat4-flash-boot"
+  install -Dm755 lubancat4-overlay    "$pkgdir/usr/bin/lubancat4-overlay"
+  # Bring-up report: one command, whole hardware state, meant to be pasted back.
+  install -Dm755 lubancat4-status     "$pkgdir/usr/bin/lubancat4-status"
+
+  # The overlay switch list. Empty by default, which matches the vendor default of
+  # enable_uboot_overlays=0: nothing is patched unless you ask for it.
+  install -Dm644 overlays.conf "$pkgdir/etc/lubancat4/overlays"
+  # The BSP entry keeps its own switch list: its overlays are compiled against the vendor base
+  # tree, so one list cannot serve both entries.
+  install -Dm644 overlays-bsp.conf "$pkgdir/etc/lubancat4/overlays-bsp"
+
+  # One script, two installers. Each kernel package turns on the entry it owns, so a later
+  # pacman transaction on the board can move the default without hand-editing extlinux.conf.
+  install -d "$pkgdir/usr/lib/lubancat4"
+  for label in arch bsp; do
+    sed "s|@LABEL@|$label|" lubancat4-default-kernel.hook \
+      > "$pkgdir/usr/lib/lubancat4/default-kernel-$label"
+  done
+  chmod 755 "$pkgdir/usr/lib/lubancat4/default-kernel-arch" \
+            "$pkgdir/usr/lib/lubancat4/default-kernel-bsp"
+
+  # What is deliberately NOT here, and where it went instead:
+  #   /etc/hostname, /etc/locale.conf  -> conf/ in this repository, written by 03-mkimg.sh.
+  #       They are per-image identity: a package that owns them would overwrite them on
+  #       every upgrade, and the board's own edits would be flagged as changed files.
+  #   /etc/pacman.d/mirrorlist         -> conf/mirrorlist.lubancat4, written by 03-mkimg.sh.
+  #       pacman-mirrorlist owns that path, and pacman refuses a transaction where two
+  #       packages both own one file ("exists in both 'pacman-mirrorlist' and ..."). Our
+  #       write is a local edit instead, so a later pacman-mirrorlist upgrade leaves
+  #       mirrorlist.pacnew behind - which is exactly how Arch wants it handled.
+  #   /etc/systemd/system/*.wants/     -> systemctl --root="$mnt" enable in 03-mkimg.sh.
+  #       Arch packaging policy forbids packages creating enable symlinks: a symlink baked
+  #       into the package comes back after `systemctl disable` on the next upgrade, which
+  #       overrides what the administrator asked for. Nothing here links to /dev/null
+  #       either - in systemd a /dev/null symlink is a *mask*, so the previous version of
+  #       this package was masking a getty unit while meaning to start it.
+}
