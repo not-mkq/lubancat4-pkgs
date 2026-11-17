@@ -10,12 +10,19 @@ base
 # whenever a package installs usr/lib/modules/<ver>/ (no .install needed in our kernel pkg).
 
 # our board packages
+#
+# The two kernels are listed mainline first, BSP second, and that order is what decides the
+# default boot entry: scripts/03-mkimg.sh takes the last kernel in this list and writes
+# "default bsp" when it is the BSP one. Putting linux-lubancat4-git after linux-lubancat4-bsp
+# here switches the image back to mainline, with no other change.
+#
 linux-lubancat4-git
+linux-lubancat4-git-headers
 # Second kernel: Rockchip's develop-6.12 tree, the only one that has the vendor Mali/RKNPU/MPP
 # drivers. Installs under /boot/bsp and /usr/lib/modules/6.12.69-bsp, so both kernels coexist
-# and the extlinux menu offers both. Its install hook sets `default bsp`; installing (or
-# reinstalling) the mainline package afterwards sets `default arch` back.
+# and the extlinux menu offers both.
 linux-lubancat4-bsp
+linux-lubancat4-bsp-headers
 uboot-lubancat4
 lubancat4-board-config
 

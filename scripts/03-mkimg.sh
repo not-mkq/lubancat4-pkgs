@@ -451,8 +451,21 @@ sed -e "s|@BOOT_PU@|$BOOT_PU|" -e "s|@ROOT_PU@|$ROOT_PU|" \
   "$mnt/usr/share/lubancat4/fstab.in" > "$mnt/etc/fstab"
 chmod 644 "$mnt/etc/fstab"
 mkdir -p "$bootmnt/extlinux"
-sed -e "s|@ROOT_PU@|$ROOT_PU|" -e "s|@KVER@|$MAIN_KVER|" \
+# Which entry is the default follows the package order, not a hardcoded label: the last of
+# linux-lubancat4-git / linux-lubancat4-bsp that pkglist lists wins, because that is the order
+# pacstrap installs them and the order the extlinux entries are written below. Editing the
+# pkglist is therefore enough to change the default. Runtime changes are explicit through
+# lubancat4-set-default and are not tied to package installation order.
+BSP_INSTALLED=0
+[[ -s $bootmnt/bsp/Image && -s $bootmnt/bsp/dtbs/rockchip/rk3588s-lubancat-4-v1.dtb ]] && BSP_INSTALLED=1
+DEFAULT_ENTRY=arch
+if (( BSP_INSTALLED )); then
+  last_kernel=$(printf '%s\n' "${PACKAGES[@]}" | grep -E '^linux-lubancat4-(git|bsp)$' | tail -1)
+  [[ $last_kernel == linux-lubancat4-bsp ]] && DEFAULT_ENTRY=bsp
+fi
+sed -e "s|@ROOT_PU@|$ROOT_PU|" -e "s|@KVER@|$MAIN_KVER|" -e "s|^default .*|default $DEFAULT_ENTRY|" \
   "$mnt/usr/share/lubancat4/extlinux.conf.in" > "$bootmnt/extlinux/extlinux.conf"
+echo "extlinux : default entry is $DEFAULT_ENTRY"
 grep -q "fdt /dtbs/$DTB" "$bootmnt/extlinux/extlinux.conf" || {
   echo "extlinux lost its devicetree line"; exit 1; }
 grep -q "root=PARTUUID=$ROOT_PU rootflags=subvol=@" "$bootmnt/extlinux/extlinux.conf" || {
@@ -495,7 +508,7 @@ add_overlays arch "$mnt/etc/lubancat4/overlays"     "$bootmnt/overlays"     /ove
 # "no such fdt" and no way back except a card reader.
 BSP_IMAGE=$bootmnt/bsp/Image
 BSP_DTB=$bootmnt/bsp/dtbs/rockchip/rk3588s-lubancat-4-v1.dtb
-if [[ -s $BSP_IMAGE && -s $BSP_DTB ]]; then
+if (( BSP_INSTALLED )); then
   BSP_KVER=$(strings "$BSP_IMAGE" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
   [[ -n $BSP_KVER ]] || BSP_KVER=bsp
   sed -e "s|@ROOT_PU@|$ROOT_PU|" -e "s|@BSP_KVER@|$BSP_KVER|" \

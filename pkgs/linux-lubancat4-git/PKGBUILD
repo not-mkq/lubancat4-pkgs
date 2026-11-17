@@ -9,8 +9,8 @@
 pkgbase=linux-lubancat4-git
 pkgname=("${pkgbase}" "${pkgbase}-headers")
 _branch=master
-pkgver=7.4.0.rc2.r1506753
-pkgrel=6
+pkgver=7.4.0.rc3.r1507215
+pkgrel=1
 pkgdesc='Mainline Linux for EmbedFire LubanCat-4 (RK3588S2), tracking Linus tree'
 arch=('aarch64')
 url='https://kernel.org'
@@ -29,7 +29,6 @@ fi
 _mk=(ARCH=arm64 PYTHON=python3)
 [[ -n ${_cross:-} ]] && _mk+=(CROSS_COMPILE="$_cross")
 source=("git+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git#branch=$_branch"
-        'lubancat4-arch-default-kernel.install'
         'config.base::https://raw.githubusercontent.com/archlinuxarm/PKGBUILDs/master/core/linux-aarch64/config'
         'lubancat.config'
         'rk3588s-lubancat4-npu.dts'
@@ -46,8 +45,7 @@ source=("git+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git#
 # Everything the image needs built-in is asserted by scripts/01-kernel-config.sh in the
 # companion repo ~/RK3588s2/lubancat4-arch, and by the checks in package() below.
 sha256sums=(  'SKIP'
-  '9e7b360afb43e1e92033c48cb065bd7cd1831598b83dd8374f95eb7e0db9b8ed'
-  '4f7895971b8fdc0e3a7155ef0a7af3d075970a95974557c223dea2d95914a701'
+  '81bb34b98dac5b162fca40380aab0d001243b8181ace718d5df2f2da04ef5ab5'
   'd1a9d8927d3594838092861208f966c3c764fdfdb529f1df3aecbb528562935b'
   '75cbb3a35b9e12fe35f98e821b3eb1ca75b57b14aeb00e8cd22f2aa7abec2ee6'
   'c04cff5fa9c471af96f651ed79be3bb5b9826bba50fc89df7156b88a1a711640'
@@ -147,10 +145,6 @@ build() {
 
 package_linux-lubancat4-git() {
   pkgdesc='Mainline Linux for EmbedFire LubanCat-4 (RK3588S2), tracking Linus tree'
-  # Runs after install and after remove. The script only moves the global "default" line in
-  # /boot/extlinux/extlinux.conf to `label arch`, and does nothing when that label or the file
-  # is not there, so pacstrap (config not written yet) is a no-op.
-  install=lubancat4-arch-default-kernel.install
   # kmod belongs here, not only in makedepends: depmod's output is read at boot by kmod's
   # 60-depmod.hook and by modprobe at runtime.
   depends=('kmod' 'coreutils')
@@ -309,8 +303,8 @@ check() {
 package_linux-lubancat4-git-headers() {
   pkgdesc='Headers and scripts for building external kernel modules for linux-lubancat4-git'
   depends=("linux-lubancat4-git=$pkgver-$pkgrel" 'binutils' 'elfutils' 'perl' 'python')
-  provides=("linux-headers=$pkgver" "linux-aarch64-headers=$pkgver")
-  conflicts=('linux-headers' 'linux-aarch64-headers')
+  # Both kernel header packages can coexist: each owns a distinct /usr/src directory.
+  provides=("linux-lubancat4-git-headers=$pkgver-$pkgrel")
 
   cd linux
   local kver builddir f n
@@ -368,4 +362,5 @@ package_linux-lubancat4-git-headers() {
 
   mkdir -p "$pkgdir/usr/src"
   ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+  ln -s "../../../src/$pkgbase" "$pkgdir/usr/lib/modules/$kver/source"
 }

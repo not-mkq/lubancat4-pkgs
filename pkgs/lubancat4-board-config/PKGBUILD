@@ -5,7 +5,7 @@
 # scripts/03-mkimg.sh instead - see the notes at the bottom of package().
 pkgname=lubancat4-board-config
 pkgver=1
-pkgrel=6
+pkgrel=7
 pkgdesc='Board tooling for EmbedFire LubanCat-4 (RK3588S2) running Arch Linux ARM'
 arch=('any')
 url='https://github.com/wasmkq/lubancat4-arch'
@@ -13,8 +13,8 @@ license=('GPL-2.0-only')
 depends=('openssh' 'systemd' 'util-linux')
 makedepends=()
 source=('50-lubancat.network' 'extlinux.conf.in' 'extlinux-bsp.conf.in'
-        'fstab.in' 'lubancat4-flash-boot' 'lubancat4-overlay' 'lubancat4-status' 'overlays.conf'
-        'overlays-bsp.conf' 'lubancat4-default-kernel.hook')
+        'fstab.in' 'lubancat4-flash-boot' 'lubancat4-overlay' 'lubancat4-status'
+        'lubancat4-set-default' 'lubancat4-set-default.fish' 'overlays.conf' 'overlays-bsp.conf')
 sha256sums=(  'ef3d31ec6bc0dd2cecfd04c2dc8a942d033550fb1a3d7e6b26543dfeb11149ba'
   '367aa5e014809aecc79d73e4f8a6b1ab92e54069725adcc53b2bc85804d8a5dc'
   '34ccd25eb17475e7416dd65c01e6eb52244169394445d98e7dcde1a5580aec33'
@@ -22,9 +22,10 @@ sha256sums=(  'ef3d31ec6bc0dd2cecfd04c2dc8a942d033550fb1a3d7e6b26543dfeb11149ba'
   'a7bc861ba3f8dd1a862556897ae4b69b4c8039f0c9baf161c6e1ebd2103d3500'
   'f56b6bab9ed4cb265b2a0dedcb17102e19ca052ef4b82065003c828c2c736699'
   'f2b4573adb33583220e7e39fa08101dc9955f26c2c9288e08ded9ef7799b4992'
+  'c3fe200afff948f2b4d5f34b79b37a1aa4f430d0553da8237ad5b2b9dc4f775f'
+  '47a6829711037483cd6c50b7d303f6fd385d4ef49d9c2a2299da20af6b019f3f'
   '888aaa1dba6c44ca274935124644b9b8b65598a1f78c2ed591b1ef71ed581c81'
   '06e1641ed27177c188f45a0b3f9c2eadb384dc90ce7430101533c5f54d57642f'
-  '865dd3e0db73607b21b1d0d691597b82020bd9e2936084d29f206baa07937cfb'
 )
 backup=('etc/systemd/network/50-lubancat.network' 'etc/lubancat4/overlays'
         'etc/lubancat4/overlays-bsp')
@@ -37,7 +38,7 @@ check() {
   local f bad=0
 
   # 1. The shell tools must parse.
-  for f in lubancat4-flash-boot lubancat4-overlay lubancat4-status; do
+  for f in lubancat4-flash-boot lubancat4-overlay lubancat4-status lubancat4-set-default; do
     if ! bash -n "$f"; then echo "check: $f does not parse"; bad=1; fi
   done
 
@@ -67,14 +68,6 @@ check() {
     echo "check: extlinux-bsp.conf.in hardcodes fdtoverlays; it comes from /etc/lubancat4/overlays-bsp"; bad=1
   fi
 
-  # The hook script is POSIX sh and must parse before it ends up as an install scriptlet.
-  f=lubancat4-default-kernel.hook
-  if ! sh -n "$f" 2>/dev/null; then
-    echo "check: $f does not parse"; bad=1
-  fi
-  if ! grep -q '@LABEL@' "$f"; then
-    echo "check: $f lost @LABEL@, which package() substitutes per kernel"; bad=1
-  fi
 
   return $bad
 }
@@ -99,6 +92,9 @@ package() {
   install -Dm755 lubancat4-overlay    "$pkgdir/usr/bin/lubancat4-overlay"
   # Bring-up report: one command, whole hardware state, meant to be pasted back.
   install -Dm755 lubancat4-status     "$pkgdir/usr/bin/lubancat4-status"
+  install -Dm755 lubancat4-set-default "$pkgdir/usr/bin/lubancat4-set-default"
+  install -Dm644 lubancat4-set-default.fish \
+    "$pkgdir/usr/share/fish/vendor_completions.d/lubancat4-set-default.fish"
 
   # The overlay switch list. Empty by default, which matches the vendor default of
   # enable_uboot_overlays=0: nothing is patched unless you ask for it.
@@ -106,16 +102,6 @@ package() {
   # The BSP entry keeps its own switch list: its overlays are compiled against the vendor base
   # tree, so one list cannot serve both entries.
   install -Dm644 overlays-bsp.conf "$pkgdir/etc/lubancat4/overlays-bsp"
-
-  # One script, two installers. Each kernel package turns on the entry it owns, so a later
-  # pacman transaction on the board can move the default without hand-editing extlinux.conf.
-  install -d "$pkgdir/usr/lib/lubancat4"
-  for label in arch bsp; do
-    sed "s|@LABEL@|$label|" lubancat4-default-kernel.hook \
-      > "$pkgdir/usr/lib/lubancat4/default-kernel-$label"
-  done
-  chmod 755 "$pkgdir/usr/lib/lubancat4/default-kernel-arch" \
-            "$pkgdir/usr/lib/lubancat4/default-kernel-bsp"
 
   # What is deliberately NOT here, and where it went instead:
   #   /etc/hostname, /etc/locale.conf  -> conf/ in this repository, written by 03-mkimg.sh.

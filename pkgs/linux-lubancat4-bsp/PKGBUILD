@@ -15,10 +15,10 @@
 # (EmbedFire ships LubanCat-4 board files in their own fork, and the vendor image for this board
 # runs 5.10). Booting this kernel on the board therefore needs the board dts ported onto it,
 # which is tracked in TODO.md; packaging it is the part done here.
-pkgname=linux-lubancat4-bsp
+pkgname=('linux-lubancat4-bsp' 'linux-lubancat4-bsp-headers')
 _pkgver_kernel=6.12.69
 pkgver=$_pkgver_kernel
-pkgrel=6
+pkgrel=7
 pkgdesc='Rockchip BSP Linux 6.12 for EmbedFire LubanCat-4 (vendor GPU/NPU/codec drivers)'
 arch=('aarch64')
 url='https://github.com/rockchip-linux/kernel'
@@ -58,13 +58,11 @@ _upstream_commit=470f9dccbdc42e7b8a824d0a5c5640a10e9457d2
 _srcname=kernel-$_upstream_commit
 source=("$_srcname.tar.gz::https://github.com/rockchip-linux/kernel/archive/$_upstream_commit.tar.gz"
         'bsp.config'
-        'vendor-dts.tar.gz'
-        'lubancat4-bsp-default-kernel.install')
+        'vendor-dts.tar.gz')
 sha256sums=(
   '3b6da867142d24b7d0282763debc072992f5d3bccc8c3dd7c9e68186b0284990'
   '31d3c5d699a9230b3443c968fb6a820bfefcd46a04bcdf06ca1717a6b6953ae7'
   '617a17e679de2d7fc687c49626dfd98f0a2f54ffe011d64bc5269ba2575f86d0'
-  '36bd85c79f7d6f87637d72c92e65842b688fc0cf8e6da7b10031b36a58facdb6'
 )
 
 prepare() {
@@ -133,11 +131,8 @@ build_board_dts() {
   done
 }
 
-package() {
+package_linux-lubancat4-bsp() {
   pkgdesc='Rockchip BSP Linux 6.12 for EmbedFire LubanCat-4 (vendor GPU/NPU/codec drivers)'
-  # Makes `label bsp` the default entry after install/remove. No-op when pacstrap installs
-  # this before extlinux.conf exists.
-  install=lubancat4-bsp-default-kernel.install
   depends=('kmod' 'coreutils')
 
   cd "$_srcname"
@@ -205,6 +200,61 @@ package() {
   install -Dm644 .config "$pkgdir/usr/lib/modules/$kver/config-$kver"
 
   echo "  bsp    : kernel $kver, $(find "$pkgdir/usr/lib/modules/$kver" -name '*.ko*' | wc -l) modules"
+}
+
+# Keep the BSP headers separate from mainline. The standard per-kernel build and source paths
+# point to this package's own /usr/src directory, so both headers packages can coexist.
+package_linux-lubancat4-bsp-headers() {
+  pkgdesc='Headers and scripts for building external kernel modules for linux-lubancat4-bsp'
+  depends=("linux-lubancat4-bsp=$pkgver-$pkgrel" 'binutils' 'elfutils' 'perl' 'python')
+  provides=("linux-lubancat4-bsp-headers=$pkgver-$pkgrel")
+
+  cd "$_srcname"
+  local kver builddir f n arch
+  kver=$(make "${_mk[@]}" -s kernelrelease)
+  builddir="$pkgdir/usr/lib/modules/$kver/build"
+
+  # What an external module build reads: the top Makefile, the Kbuild machinery in scripts/,
+  # the headers, Module.symvers (the exported symbol CRCs) and every Kconfig.
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/arm64" -m644 arch/arm64/Makefile
+  install -Dt "$builddir/arch/arm64/kernel" -m644 arch/arm64/kernel/asm-offsets.s
+  cp -t "$builddir" -a scripts include
+  cp -t "$builddir/arch/arm64" -a arch/arm64/include
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  echo "  dropping other architectures..."
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */arm64/ ]] && continue
+    rm -rf "$arch"
+  done
+  rm -rf "$builddir/Documentation"
+  find -L "$builddir" -type l -delete
+  find "$builddir" -type f -name '*.o' -delete
+
+  # scripts/ is full of host programs (fixdep, modpost, dtc, conf) and kbuild builds them with
+  # HOSTCC, which on an x86_64 host means x86_64 binaries. Shipping those to the board is an
+  # "Exec format error" on the first module build. They cannot simply be cross rebuilt either:
+  # fixdep is itself built with HOSTCC and then run to build every other host object. Delete
+  # them; kbuild rebuilds what it needs natively on the board.
+  if [[ $(uname -m) != aarch64 ]]; then
+    n=0
+    while IFS= read -r -d '' f; do
+      magic=$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d '[:space:]')
+      emach=$(od -An -j18 -N2 --endian=little -tu2 "$f" 2>/dev/null | tr -d '[:space:]')
+      if [[ $magic == 7f454c46 && $emach == 62 ]]; then
+        rm -f "$f"
+        n=$((n + 1))
+      fi
+    done < <(find "$builddir/scripts" -type f -perm -u+x -print0)
+    (( n > 0 )) || { echo "expected host tools under scripts/ and found none - check this"; exit 1; }
+    echo "  dropped $n host-architecture tools (they get rebuilt natively on the board)"
+  fi
+
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/linux-lubancat4-bsp"
+  ln -s "../../../src/linux-lubancat4-bsp" "$pkgdir/usr/lib/modules/$kver/source"
 }
 
 # Verified before packaging, like the mainline package. Only symbols this tree is expected to
